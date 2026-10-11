@@ -43,3 +43,8 @@ app.include_router(routes_metrics.router)
 @app.get("/")
 def root() -> dict[str, str]:
     return {"service": settings.domain_name, "docs": "/docs"}
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok", "service": settings.domain_name}
