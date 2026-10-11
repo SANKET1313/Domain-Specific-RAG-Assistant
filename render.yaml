@@ -1,10 +1,11 @@
 services:
   - type: web
-    name: domain-specific-rag-assistant
+    name: domain-rag-backend
     runtime: docker
     plan: free
-    healthCheckPath: /_stcore/health
     dockerfilePath: Dockerfile
+    dockerCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
     envVars:
       - key: DOMAIN_NAME
         value: "Company Policy Assistant"
@@ -30,3 +31,15 @@ services:
         value: "2500"
       - key: LLM_TEMPERATURE
         value: "0.2"
+
+  - type: web
+    name: domain-rag-frontend
+    runtime: docker
+    plan: free
+    dockerfilePath: Dockerfile.frontend
+    dockerCommand: streamlit run frontend/app.py --server.address 0.0.0.0 --server.port $PORT
+    healthCheckPath: /_stcore/health
+    envVars:
+      - key: API_URL
+        value: https://domain-rag-backend.onrender.com
+        sync: false
