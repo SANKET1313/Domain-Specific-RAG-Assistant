@@ -3,7 +3,7 @@ services:
     name: domain-specific-rag-api
     runtime: docker
     plan: free
-    healthCheckPath: /health
+    healthCheckPath: /_stcore/health
     dockerfilePath: Dockerfile
     envVars:
       - key: NVIDIA_API_KEY
@@ -22,5 +22,5 @@ services:
         value: "120"
       - key: LLM_MAX_TOKENS
         value: "2500"
-      - key: TEMPERATURE
+      - key: LLM_TEMPERATURE
         value: "0.2"
