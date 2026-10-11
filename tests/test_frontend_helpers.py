@@ -7,20 +7,38 @@ import pytest
 import requests
 
 
-def test_get_backend_url_default():
+def test_get_backend_url_default(monkeypatch):
+    monkeypatch.delenv("API_URL", raising=False)
+    monkeypatch.delenv("RENDER", raising=False)
     from frontend.app import get_backend_url
 
-    with patch.dict(os.environ, {}, clear=True):
-        url = get_backend_url()
-        assert url == "http://127.0.0.1:8000"
+    url = get_backend_url()
+    assert url == "http://127.0.0.1:8000"
 
 
-def test_get_backend_url_custom_and_strip_slash():
+def test_get_backend_url_custom_and_strip_slash(monkeypatch):
+    monkeypatch.setenv("API_URL", "https://domain-rag-backend.onrender.com/")
     from frontend.app import get_backend_url
 
-    with patch.dict(os.environ, {"API_URL": "https://domain-rag-backend.onrender.com/"}):
-        url = get_backend_url()
-        assert url == "https://domain-rag-backend.onrender.com"
+    url = get_backend_url()
+    assert url == "https://domain-rag-backend.onrender.com"
+
+
+def test_get_backend_url_auto_prefix_https(monkeypatch):
+    monkeypatch.setenv("API_URL", "domain-rag-backend.onrender.com")
+    from frontend.app import get_backend_url
+
+    url = get_backend_url()
+    assert url == "https://domain-rag-backend.onrender.com"
+
+
+def test_get_backend_url_render_missing_api_url(monkeypatch):
+    monkeypatch.delenv("API_URL", raising=False)
+    monkeypatch.setenv("RENDER", "true")
+    from frontend.app import get_backend_url
+
+    url = get_backend_url()
+    assert url == ""
 
 
 def test_check_backend_health_invalid_url():
@@ -35,18 +53,31 @@ def test_check_backend_health_invalid_url():
 def test_check_backend_health_success():
     mock_resp = MagicMock()
     mock_resp.status_code = 200
+    mock_resp.json.return_value = {"status": "ok", "service": "Test Service"}
     with patch("frontend.app.API_URL", "http://127.0.0.1:8000"):
-        with patch("requests.get", return_value=mock_resp):
+        with patch("requests.request", return_value=mock_resp):
             from frontend.app import check_backend_health
 
             is_ok, msg = check_backend_health()
             assert is_ok is True
-            assert msg == "Backend healthy"
+            assert "Connected to" in msg
+
+
+def test_check_backend_health_502_bad_gateway():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 502
+    with patch("frontend.app.API_URL", "https://domain-rag-backend.onrender.com"):
+        with patch("requests.request", return_value=mock_resp):
+            from frontend.app import check_backend_health
+
+            is_ok, msg = check_backend_health()
+            assert is_ok is False
+            assert "HTTP 502" in msg
 
 
 def test_check_backend_health_connection_error():
     with patch("frontend.app.API_URL", "http://127.0.0.1:8000"):
-        with patch("requests.get", side_effect=requests.exceptions.ConnectionError("Refused")):
+        with patch("requests.request", side_effect=requests.exceptions.ConnectionError("Refused")):
             from frontend.app import check_backend_health
 
             is_ok, msg = check_backend_health()
@@ -56,7 +87,7 @@ def test_check_backend_health_connection_error():
 
 def test_check_backend_health_timeout():
     with patch("frontend.app.API_URL", "http://127.0.0.1:8000"):
-        with patch("requests.get", side_effect=requests.exceptions.Timeout("Timed out")):
+        with patch("requests.request", side_effect=requests.exceptions.ConnectTimeout("Timed out")):
             from frontend.app import check_backend_health
 
             is_ok, msg = check_backend_health()
@@ -64,17 +95,28 @@ def test_check_backend_health_timeout():
             assert "timed out" in msg
 
 
-def test_check_backend_health_http_error():
+def test_check_backend_health_http_503_error():
     mock_resp = MagicMock()
     mock_resp.status_code = 503
-    mock_resp.reason = "Service Unavailable"
     with patch("frontend.app.API_URL", "http://127.0.0.1:8000"):
-        with patch("requests.get", return_value=mock_resp):
+        with patch("requests.request", return_value=mock_resp):
             from frontend.app import check_backend_health
 
             is_ok, msg = check_backend_health()
             assert is_ok is False
             assert "503" in msg
+
+
+def test_api_request_handles_504_gateway_timeout():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 504
+    with patch("frontend.app.API_URL", "https://domain-rag-backend.onrender.com"):
+        with patch("requests.request", return_value=mock_resp):
+            from frontend.app import api_request
+
+            ok, data, err = api_request("POST", "/query", json={"query": "test"})
+            assert ok is False
+            assert "HTTP 504" in err
 
 
 def test_no_widgets_inside_cached_functions():
