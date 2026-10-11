@@ -16,7 +16,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 COPY prompts ./prompts
+COPY frontend ./frontend
 RUN mkdir -p data/documents data/sample_documents data/evaluation qdrant_storage
 
-EXPOSE 8000
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+EXPOSE 8501 8000
+CMD ["sh", "-c", "uvicorn app.main:app --host 127.0.0.1 --port 8000 & streamlit run frontend/app.py --server.port ${PORT:-8501} --server.address 0.0.0.0 --server.headless true --browser.gatherUsageStats false"]
