@@ -1,0 +1,3 @@
+# Lightweight requirements for Streamlit Frontend service on Render
+streamlit>=1.33
+requests>=2.31
