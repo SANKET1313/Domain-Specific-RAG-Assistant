@@ -1,0 +1,31 @@
+[project]
+name = "domain-specific-rag-application"
+version = "1.0.0"
+description = "Domain-Specific RAG Application with Modal and Hugging Face integration"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "python-multipart>=0.0.9",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "python-dotenv>=1.0",
+    "requests>=2.31",
+    "pymupdf>=1.24",
+    "python-docx>=1.1",
+    "qdrant-client>=1.9",
+    "openai>=1.30",
+    "anthropic>=0.25",
+    "modal>=1.0",
+    "sentence-transformers>=2.7",
+    "streamlit>=1.33",
+    "pytest>=8.0",
+    "httpx>=0.27",
+    "llama-index-core>=0.14.25",
+    "rapidocr-onnxruntime>=1.4.4",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+

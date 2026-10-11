@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: domain-specific-rag-api
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    dockerfilePath: Dockerfile
+    envVars:
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: NVIDIA_MODEL
+        value: meta/llama-3.2-11b-vision-instruct
+      - key: EMBEDDING_MODEL
+        value: nvidia/nemotron-3-embed-1b
+      - key: QDRANT_URL
+        value: http://localhost:6333
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: VECTOR_PROVIDER
+        value: qdrant
+      - key: LLM_TIMEOUT
+        value: "120"
+      - key: LLM_MAX_TOKENS
+        value: "2500"
+      - key: TEMPERATURE
+        value: "0.2"
