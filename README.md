@@ -357,7 +357,14 @@ API_URL=http://localhost:8000
 
 ### Running the Application
 
-#### Option A: Running Locally with `uv` (Two Terminals)
+#### Option A: Single Command Quickstart (Recommended)
+```powershell
+python run.py
+```
+- Automatically initializes and supervises the FastAPI backend on `http://127.0.0.1:8000`.
+- Launches and connects the Streamlit Web UI on `http://localhost:8501`.
+
+#### Option B: Running Locally with Two Terminals
 
 **Terminal 1 — Start the FastAPI Backend:**
 ```powershell
@@ -372,7 +379,7 @@ uv run streamlit run frontend/app.py --server.port 8501
 ```
 - Web Application: `http://localhost:8501`
 
-#### Option B: Running with Docker Compose
+#### Option C: Running with Docker Compose
 ```bash
 docker compose up --build
 ```
