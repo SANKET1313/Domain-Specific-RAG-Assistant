@@ -1,14 +1,10 @@
 services:
-  # ---------------------------------------------------------------------------
-  # 1. Backend Web Service (FastAPI + RAG Pipeline)
-  # ---------------------------------------------------------------------------
   - type: web
-    name: domain-rag-backend
+    name: domain-specific-rag-assistant
     runtime: docker
     plan: free
+    healthCheckPath: /_stcore/health
     dockerfilePath: Dockerfile
-    dockerCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /health
     envVars:
       - key: DOMAIN_NAME
         value: "Company Policy Assistant"
@@ -34,19 +30,3 @@ services:
         value: "2500"
       - key: LLM_TEMPERATURE
         value: "0.2"
-
-  # ---------------------------------------------------------------------------
-  # 2. Frontend Web Service (Streamlit UI)
-  # ---------------------------------------------------------------------------
-  - type: web
-    name: domain-rag-frontend
-    runtime: docker
-    plan: free
-    dockerfilePath: Dockerfile.frontend
-    dockerCommand: streamlit run frontend/app.py --server.address 0.0.0.0 --server.port $PORT
-    healthCheckPath: /_stcore/health
-    envVars:
-      # Set API_URL in Render Dashboard to the backend's reachable HTTPS URL,
-      # e.g.: https://domain-rag-backend.onrender.com
-      - key: API_URL
-        sync: false
