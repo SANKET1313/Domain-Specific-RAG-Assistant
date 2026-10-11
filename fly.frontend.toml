@@ -1,0 +1,33 @@
+# Fly.io configuration for Domain RAG Streamlit Frontend
+# Deploy with: fly deploy --config fly.frontend.toml
+
+app = "domain-rag-frontend"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile.frontend"
+
+[env]
+  # Using Fly.io private 6PN mesh: http://<backend-app-name>.internal:8000
+  # Or public URL: https://<backend-app-name>.fly.dev
+  API_URL = "http://domain-rag-backend.internal:8000"
+
+[http_service]
+  internal_port = 8501
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+[[http_service.checks]]
+  grace_period = "10s"
+  interval = "30s"
+  method = "GET"
+  timeout = "5s"
+  path = "/_stcore/health"
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
