@@ -48,3 +48,10 @@ def root() -> dict[str, str]:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "service": settings.domain_name}
+
+
+@app.get("/_stcore/health")
+def stcore_health() -> dict[str, str]:
+    """Compatibility alias for Streamlit health check path on Render."""
+    return {"status": "ok", "service": settings.domain_name}
+
