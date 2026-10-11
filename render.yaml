@@ -24,3 +24,5 @@ services:
         value: "2500"
       - key: LLM_TEMPERATURE
         value: "0.2"
+      - key: API_URL
+        value: http://127.0.0.1:8001
