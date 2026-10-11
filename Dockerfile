@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 COPY prompts ./prompts
-COPY data ./data
+RUN mkdir -p data/documents data/sample_documents data/evaluation qdrant_storage
 
 EXPOSE 8000
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
