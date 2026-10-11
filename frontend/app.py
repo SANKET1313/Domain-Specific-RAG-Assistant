@@ -8,16 +8,83 @@ Run the backend first, then:
 """
 from __future__ import annotations
 
+import logging
 import os
+import threading
+import time
 from collections import defaultdict
+from urllib.parse import urlparse
 
 import requests
 import streamlit as st
 
-API_URL = os.getenv("API_URL", "http://localhost:8000")
-
 st.set_page_config(page_title="Domain RAG Assistant", page_icon="📚", layout="wide")
 st.title("📚 Domain-Specific RAG Assistant")
+
+logger = logging.getLogger("streamlit_frontend")
+
+
+@st.cache_resource
+def resolve_and_ensure_backend(configured_url: str) -> str:
+    """Ensure a functioning FastAPI backend is reachable.
+    
+    If no backend is reachable and configured_url points to a local address,
+    automatically starts FastAPI uvicorn in a background daemon thread.
+    """
+    candidates = [configured_url]
+    if "localhost" in configured_url:
+        candidates.append(configured_url.replace("localhost", "127.0.0.1"))
+    elif "127.0.0.1" in configured_url:
+        candidates.append(configured_url.replace("127.0.0.1", "localhost"))
+
+    # 1. Check if backend is already listening
+    for candidate in candidates:
+        try:
+            if requests.get(f"{candidate}/health", timeout=1.5).ok:
+                return candidate
+        except Exception:
+            pass
+
+    # 2. If it's a local address and offline, auto-start in background thread
+    parsed = urlparse(configured_url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 8000
+
+    if host in ("localhost", "127.0.0.1", "0.0.0.0"):
+        try:
+            import uvicorn
+            from app.main import app as fastapi_app
+
+            def _start_server():
+                cfg = uvicorn.Config(
+                    fastapi_app,
+                    host="127.0.0.1",
+                    port=port,
+                    log_level="warning",
+                    access_log=False,
+                )
+                srv = uvicorn.Server(cfg)
+                srv.run()
+
+            t = threading.Thread(target=_start_server, daemon=True, name="FastAPI-Embedded")
+            t.start()
+
+            for _ in range(12):
+                time.sleep(0.5)
+                for test_url in [f"http://127.0.0.1:{port}", f"http://localhost:{port}"]:
+                    try:
+                        if requests.get(f"{test_url}/health", timeout=1).ok:
+                            return test_url
+                    except Exception:
+                        pass
+        except Exception as exc:
+            logger.warning("Could not auto-start embedded FastAPI: %s", exc)
+
+    return configured_url
+
+
+_RAW_API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
+API_URL = resolve_and_ensure_backend(_RAW_API_URL)
 
 tab_upload, tab_docs, tab_qa, tab_eval = st.tabs(
     ["Upload & Index", "Indexed Documents", "Ask", "Evaluation"]
@@ -27,7 +94,7 @@ tab_upload, tab_docs, tab_qa, tab_eval = st.tabs(
 # --- Helper Functions -----------------------------------------------------
 def check_backend_health() -> bool:
     try:
-        resp = requests.get(f"{API_URL}/health", timeout=3)
+        resp = requests.get(f"{API_URL}/health", timeout=2)
         return resp.ok
     except Exception:
         return False
@@ -43,7 +110,8 @@ def fetch_documents() -> list[dict]:
     return []
 
 
-if not check_backend_health():
+_is_online = check_backend_health()
+if not _is_online:
     st.error(
         f"🚨 **FastAPI Backend Unreachable** (`{API_URL}`)\n\n"
         "The frontend cannot connect to the RAG backend API. "
@@ -52,6 +120,8 @@ if not check_backend_health():
         "- **Docker / Cloud**: Ensure the backend container is running and `API_URL` environment variable is correctly configured.",
         icon="🔌",
     )
+else:
+    st.sidebar.success(f"🟢 Backend Online: `{API_URL}`")
 
 
 # --- Upload & Index -------------------------------------------------------
@@ -214,17 +284,24 @@ with tab_docs:
         )
         if quick_files and st.button("Index Uploaded Files", key="btn_quick_upload", type="primary"):
             with st.spinner("Indexing uploaded files..."):
+                errors = []
                 for qf in quick_files:
                     try:
-                        requests.post(
+                        resp = requests.post(
                             f"{API_URL}/upload",
                             files={"file": (qf.name, qf.getvalue())},
                             timeout=300,
                         )
-                    except Exception:
-                        pass
-                st.success("Upload and indexing completed!")
-                st.rerun()
+                        if not resp.ok:
+                            errors.append(f"{qf.name}: {resp.text[:100]}")
+                    except Exception as exc:
+                        errors.append(f"{qf.name}: {exc}")
+                if errors:
+                    for err in errors:
+                        st.error(f"Upload error: {err}")
+                else:
+                    st.success("Upload and indexing completed!")
+                    st.rerun()
 
     if not docs:
         st.info("No documents are currently indexed in the vector store. Upload or index files above to get started.")
