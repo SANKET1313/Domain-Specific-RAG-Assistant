@@ -1,28 +1,52 @@
 services:
+  # ---------------------------------------------------------------------------
+  # 1. Backend Web Service (FastAPI + RAG Pipeline)
+  # ---------------------------------------------------------------------------
   - type: web
-    name: domain-specific-rag-api
+    name: domain-rag-backend
     runtime: docker
     plan: free
-    healthCheckPath: /_stcore/health
     dockerfilePath: Dockerfile
+    dockerCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
     envVars:
+      - key: DOMAIN_NAME
+        value: "Company Policy Assistant"
       - key: NVIDIA_API_KEY
         sync: false
       - key: NVIDIA_MODEL
         value: meta/llama-3.2-11b-vision-instruct
       - key: EMBEDDING_MODEL
-        value: nvidia/nemotron-3-embed-1b
+        value: nemotron-3-embed-1b
+      - key: EMBEDDING_PROVIDER
+        value: nvidia
+      - key: VECTOR_PROVIDER
+        value: qdrant
       - key: QDRANT_URL
         value: http://localhost:6333
       - key: QDRANT_API_KEY
         sync: false
-      - key: VECTOR_PROVIDER
-        value: qdrant
+      - key: MAX_UPLOAD_MB
+        value: "200"
       - key: LLM_TIMEOUT
         value: "120"
       - key: LLM_MAX_TOKENS
         value: "2500"
       - key: LLM_TEMPERATURE
         value: "0.2"
+
+  # ---------------------------------------------------------------------------
+  # 2. Frontend Web Service (Streamlit UI)
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: domain-rag-frontend
+    runtime: docker
+    plan: free
+    dockerfilePath: Dockerfile.frontend
+    dockerCommand: streamlit run frontend/app.py --server.address 0.0.0.0 --server.port $PORT
+    healthCheckPath: /_stcore/health
+    envVars:
+      # Set API_URL in Render Dashboard to the backend's reachable HTTPS URL,
+      # e.g.: https://domain-rag-backend.onrender.com
       - key: API_URL
-        value: http://127.0.0.1:8001
+        sync: false
