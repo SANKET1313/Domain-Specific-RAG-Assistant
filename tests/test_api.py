@@ -12,6 +12,12 @@ def test_health():
     assert r.json()["status"] == "ok"
 
 
+def test_stcore_health():
+    r = client.get("/_stcore/health")
+    assert r.status_code == 200
+    assert r.json()["status"] == "ok"
+
+
 def test_metrics_shape():
     r = client.get("/metrics")
     assert r.status_code == 200
