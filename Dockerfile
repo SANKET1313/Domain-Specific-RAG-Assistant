@@ -1,5 +1,4 @@
-# Container image for Domain-Specific RAG Application.
-# Runs the FastAPI backend internally and serves the Streamlit UI on $PORT.
+# Container image for Domain-Specific RAG Application - FastAPI Backend.
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -17,10 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 COPY prompts ./prompts
-COPY frontend ./frontend
-COPY .streamlit ./.streamlit
-COPY run.py .
 RUN mkdir -p data/documents data/sample_documents data/evaluation qdrant_storage
 
-EXPOSE 8501 8000
-CMD ["python", "run.py"]
+EXPOSE 8000
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
