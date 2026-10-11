@@ -1,0 +1,16 @@
+Use the following retrieved context to answer the question.
+
+=== CONTEXT START ===
+{context}
+=== CONTEXT END ===
+
+Question: {question}
+
+Respond in exactly this format:
+
+Answer:
+<your grounded answer here. If the question refers to a section or asks for a list/collection of items (such as all 20 ways, 10 methods, or steps), enumerate and cover every item present in the sources in sequential order from 1 to N concisely and cleanly so the full set of items is completely delivered.>
+
+Sources:
+- <document_name> — Page <page_number>
+(List only the sources you actually used. If the context is insufficient, say so in the Answer section and leave Sources empty.)
