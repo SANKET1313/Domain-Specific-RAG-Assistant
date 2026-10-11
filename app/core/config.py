@@ -109,7 +109,7 @@ class Settings(BaseSettings):
     embedding_cost_per_1m: float = Field(default=0.0, alias="EMBEDDING_COST_PER_1M_TOKENS")
 
     # ---- Uploads ----------------------------------------------------------
-    max_upload_mb: int = Field(default=25, alias="MAX_UPLOAD_MB")
+    max_upload_mb: int = Field(default=200, alias="MAX_UPLOAD_MB")
     allowed_extensions: str = Field(
         default=".pdf,.txt,.md,.docx,.png,.jpg,.jpeg,.webp,.bmp,.tiff",
         alias="ALLOWED_EXTENSIONS",
