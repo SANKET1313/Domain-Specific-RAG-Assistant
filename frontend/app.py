@@ -25,6 +25,14 @@ tab_upload, tab_docs, tab_qa, tab_eval = st.tabs(
 
 
 # --- Helper Functions -----------------------------------------------------
+def check_backend_health() -> bool:
+    try:
+        resp = requests.get(f"{API_URL}/health", timeout=3)
+        return resp.ok
+    except Exception:
+        return False
+
+
 def fetch_documents() -> list[dict]:
     try:
         resp = requests.get(f"{API_URL}/documents", timeout=30)
@@ -33,6 +41,17 @@ def fetch_documents() -> list[dict]:
     except requests.RequestException:
         pass
     return []
+
+
+if not check_backend_health():
+    st.error(
+        f"🚨 **FastAPI Backend Unreachable** (`{API_URL}`)\n\n"
+        "The frontend cannot connect to the RAG backend API. "
+        "Please ensure the backend is running:\n"
+        "- **Locally**: Run `uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload`\n"
+        "- **Docker / Cloud**: Ensure the backend container is running and `API_URL` environment variable is correctly configured.",
+        icon="🔌",
+    )
 
 
 # --- Upload & Index -------------------------------------------------------
@@ -94,6 +113,17 @@ with tab_upload:
                                 "OCR": 0,
                                 "Chunks": 0,
                             })
+                    except requests.ConnectionError:
+                        results.append({
+                            "File": file_obj.name,
+                            "Status": f"❌ Connection Refused: Backend API at {API_URL} is offline. Please start uvicorn.",
+                            "Document ID": "-",
+                            "Type": "-",
+                            "Pages": 0,
+                            "Digital": 0,
+                            "OCR": 0,
+                            "Chunks": 0,
+                        })
                     except Exception as exc:
                         results.append({
                             "File": file_obj.name,
