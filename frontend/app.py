@@ -1,134 +1,109 @@
-"""Streamlit frontend.
+"""Streamlit frontend for Domain-Specific RAG Assistant.
 
-This is a thin client: it only calls the FastAPI backend over HTTP. No RAG
-logic, API keys, or secrets live here (keys stay server-side).
-
-Run the backend first, then:
-    streamlit run frontend/app.py
+Thin-client web interface that communicates with the FastAPI backend over HTTP.
+All RAG pipeline execution, embedding models, vector database operations, and
+secrets remain server-side.
 """
 from __future__ import annotations
 
 import logging
 import os
-import threading
-import time
 from collections import defaultdict
-from urllib.parse import urlparse
 
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Domain RAG Assistant", page_icon="📚", layout="wide")
-st.title("📚 Domain-Specific RAG Assistant")
-
 logger = logging.getLogger("streamlit_frontend")
 
+st.set_page_config(
+    page_title="Domain RAG Assistant",
+    page_icon="📚",
+    layout="wide",
+)
+st.title("📚 Domain-Specific RAG Assistant")
 
-@st.cache_resource
-def resolve_and_ensure_backend(configured_url: str) -> str:
-    """Ensure a functioning FastAPI backend is reachable.
+
+# --- Configuration & Health Check -----------------------------------------
+def get_backend_url() -> str:
+    """Retrieve the backend API URL from the environment.
     
-    If no backend is reachable and configured_url points to a local address,
-    automatically starts FastAPI uvicorn in a background daemon thread.
+    In production (e.g., on Render), this reads the API_URL environment variable
+    pointing to the deployed FastAPI service (e.g., https://domain-rag-backend.onrender.com).
+    For local development, it defaults to http://127.0.0.1:8000.
     """
-    candidates = [configured_url]
-    if "localhost" in configured_url:
-        candidates.append(configured_url.replace("localhost", "127.0.0.1"))
-    elif "127.0.0.1" in configured_url:
-        candidates.append(configured_url.replace("127.0.0.1", "localhost"))
-
-    # 1. Check if backend is already listening
-    for candidate in candidates:
-        try:
-            if requests.get(f"{candidate}/health", timeout=1.5).ok:
-                return candidate
-        except Exception:
-            pass
-
-    # 2. If it's a local address and offline, auto-start in background thread
-    parsed = urlparse(configured_url)
-    host = parsed.hostname or "127.0.0.1"
-    port = parsed.port or 8000
-
-    if host in ("localhost", "127.0.0.1", "0.0.0.0"):
-        try:
-            import uvicorn
-            from app.main import app as fastapi_app
-
-            def _start_server():
-                cfg = uvicorn.Config(
-                    fastapi_app,
-                    host="127.0.0.1",
-                    port=port,
-                    log_level="warning",
-                    access_log=False,
-                )
-                srv = uvicorn.Server(cfg)
-                srv.run()
-
-            t = threading.Thread(target=_start_server, daemon=True, name="FastAPI-Embedded")
-            t.start()
-
-            for _ in range(12):
-                time.sleep(0.5)
-                for test_url in [f"http://127.0.0.1:{port}", f"http://localhost:{port}"]:
-                    try:
-                        if requests.get(f"{test_url}/health", timeout=1).ok:
-                            return test_url
-                    except Exception:
-                        pass
-        except Exception as exc:
-            logger.warning("Could not auto-start embedded FastAPI: %s", exc)
-
-    return configured_url
+    raw_url = os.getenv("API_URL", "http://127.0.0.1:8000").strip()
+    return raw_url.rstrip("/")
 
 
-_RAW_API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
-API_URL = resolve_and_ensure_backend(_RAW_API_URL)
+API_URL = get_backend_url()
 
+
+def check_backend_health() -> tuple[bool, str]:
+    """Check connectivity to the FastAPI backend /health endpoint.
+    
+    Returns:
+        tuple of (is_healthy, diagnostic_message)
+    """
+    if not (API_URL.startswith("http://") or API_URL.startswith("https://")):
+        return False, f"Invalid API_URL format: '{API_URL}'. Must begin with http:// or https://"
+    try:
+        resp = requests.get(f"{API_URL}/health", timeout=3)
+        if resp.status_code == 200:
+            return True, "Backend healthy"
+        return False, f"Backend returned HTTP {resp.status_code} ({resp.reason})"
+    except requests.exceptions.Timeout:
+        return False, f"Connection timed out contacting backend at {API_URL} (timeout=3s)"
+    except requests.exceptions.ConnectionError:
+        return False, f"Connection refused or backend unavailable at {API_URL}"
+    except requests.exceptions.RequestException as exc:
+        return False, f"Network request error contacting {API_URL}: {type(exc).__name__}"
+    except Exception as exc:
+        return False, f"Unexpected error contacting backend: {type(exc).__name__}"
+
+
+is_backend_online, health_diagnostic = check_backend_health()
+
+if not is_backend_online:
+    st.error(
+        f"🚨 **FastAPI Backend Unreachable**\n\n"
+        f"- **Target URL**: `{API_URL}`  \n"
+        f"- **Diagnostic**: {health_diagnostic}\n\n"
+        "**Troubleshooting Steps**:\n"
+        "1. **Render / Production**: Verify that the backend service is deployed and healthy. "
+        "In the frontend service's Environment settings on Render, set `API_URL` to the backend's URL "
+        "(e.g., `https://domain-rag-backend.onrender.com`).\n"
+        "2. **Local Development**: Ensure the backend server is running in a terminal:  \n"
+        "   `uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload` (or `python run.py`).\n"
+        "3. **Docker Compose**: Verify that services are up and `API_URL=http://backend:8000` is set.",
+        icon="🔌",
+    )
+else:
+    st.sidebar.success(f"🟢 Backend Connected: `{API_URL}`")
+
+
+# --- Helper Functions -----------------------------------------------------
+def fetch_documents() -> list[dict]:
+    """Fetch the list of indexed documents from the vector database."""
+    try:
+        resp = requests.get(f"{API_URL}/documents", timeout=15)
+        if resp.ok:
+            return resp.json()
+    except requests.RequestException as exc:
+        logger.warning("Failed to fetch documents from %s: %s", API_URL, exc)
+    return []
+
+
+# --- Navigation Tabs ------------------------------------------------------
 tab_upload, tab_docs, tab_qa, tab_eval = st.tabs(
     ["Upload & Index", "Indexed Documents", "Ask", "Evaluation"]
 )
 
 
-# --- Helper Functions -----------------------------------------------------
-def check_backend_health() -> bool:
-    try:
-        resp = requests.get(f"{API_URL}/health", timeout=2)
-        return resp.ok
-    except Exception:
-        return False
-
-
-def fetch_documents() -> list[dict]:
-    try:
-        resp = requests.get(f"{API_URL}/documents", timeout=30)
-        if resp.ok:
-            return resp.json()
-    except requests.RequestException:
-        pass
-    return []
-
-
-_is_online = check_backend_health()
-if not _is_online:
-    st.error(
-        f"🚨 **FastAPI Backend Unreachable** (`{API_URL}`)\n\n"
-        "The frontend cannot connect to the RAG backend API. "
-        "Please ensure the backend is running:\n"
-        "- **Locally**: Run `uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload`\n"
-        "- **Docker / Cloud**: Ensure the backend container is running and `API_URL` environment variable is correctly configured.",
-        icon="🔌",
-    )
-else:
-    st.sidebar.success(f"🟢 Backend Online: `{API_URL}`")
-
-
-# --- Upload & Index -------------------------------------------------------
+# --- 1. Upload & Index Tab ------------------------------------------------
 with tab_upload:
     st.subheader("Upload & Index Documents")
     st.markdown(
-        "Upload documents and images (`.pdf`, `.docx`, `.txt`, `.md`, `.png`, `.jpg`, `.jpeg`, `.webp`). "
+        "Upload documents and images (`.pdf`, `.docx`, `.txt`, `.md`, `.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, `.tiff`). "
         "The system supports digital PDFs, embedded tables/charts, standalone images, "
         "and scanned documents via hybrid Vision OCR."
     )
@@ -137,6 +112,8 @@ with tab_upload:
         "Choose file(s) to index",
         type=["pdf", "txt", "md", "docx", "png", "jpg", "jpeg", "webp", "bmp", "tiff"],
         accept_multiple_files=True,
+        key="main_document_uploader",
+        help="Maximum 200 MB per file. Supports documents and images.",
     )
 
     if uploaded_files:
@@ -144,7 +121,7 @@ with tab_upload:
         for f in uploaded_files:
             st.caption(f"📄 **{f.name}** ({f.size / 1024:.1f} KB)")
 
-        if st.button("🚀 Ingest & Index Document(s)", type="primary"):
+        if st.button("🚀 Ingest & Index Document(s)", type="primary", key="btn_ingest_docs"):
             progress_bar = st.progress(0)
             status_container = st.container()
 
@@ -162,7 +139,7 @@ with tab_upload:
                             results.append({
                                 "File": file_obj.name,
                                 "Status": "✅ Indexed",
-                                "Document ID": data.get("document_id"),
+                                "Document ID": data.get("document_id", "-"),
                                 "Type": data.get("document_type", "digital"),
                                 "Pages": data.get("total_pages", 1),
                                 "Digital": data.get("pages_digital", 0),
@@ -172,10 +149,10 @@ with tab_upload:
                             if data.get("warnings"):
                                 for w in data["warnings"]:
                                     st.warning(f"⚠️ {file_obj.name}: {w}")
-                        else:
+                        elif resp.status_code in (400, 413):
                             results.append({
                                 "File": file_obj.name,
-                                "Status": f"❌ Error: {resp.text[:80]}",
+                                "Status": f"❌ Validation Error: {resp.text[:100]}",
                                 "Document ID": "-",
                                 "Type": "-",
                                 "Pages": 0,
@@ -183,10 +160,43 @@ with tab_upload:
                                 "OCR": 0,
                                 "Chunks": 0,
                             })
-                    except requests.ConnectionError:
+                        elif resp.status_code == 422:
+                            results.append({
+                                "File": file_obj.name,
+                                "Status": f"❌ Extraction Error: {resp.text[:100]}",
+                                "Document ID": "-",
+                                "Type": "-",
+                                "Pages": 0,
+                                "Digital": 0,
+                                "OCR": 0,
+                                "Chunks": 0,
+                            })
+                        else:
+                            results.append({
+                                "File": file_obj.name,
+                                "Status": f"❌ Server Error ({resp.status_code}): {resp.text[:80]}",
+                                "Document ID": "-",
+                                "Type": "-",
+                                "Pages": 0,
+                                "Digital": 0,
+                                "OCR": 0,
+                                "Chunks": 0,
+                            })
+                    except requests.exceptions.Timeout:
                         results.append({
                             "File": file_obj.name,
-                            "Status": f"❌ Connection Refused: Backend API at {API_URL} is offline. Please start uvicorn.",
+                            "Status": "❌ Ingestion Timed Out (>300s)",
+                            "Document ID": "-",
+                            "Type": "-",
+                            "Pages": 0,
+                            "Digital": 0,
+                            "OCR": 0,
+                            "Chunks": 0,
+                        })
+                    except requests.exceptions.ConnectionError:
+                        results.append({
+                            "File": file_obj.name,
+                            "Status": f"❌ Connection Error: Backend API at {API_URL} is offline",
                             "Document ID": "-",
                             "Type": "-",
                             "Pages": 0,
@@ -197,7 +207,7 @@ with tab_upload:
                     except Exception as exc:
                         results.append({
                             "File": file_obj.name,
-                            "Status": f"❌ Failed: {exc}",
+                            "Status": f"❌ Failed: {type(exc).__name__}",
                             "Document ID": "-",
                             "Type": "-",
                             "Pages": 0,
@@ -213,7 +223,7 @@ with tab_upload:
                 st.dataframe(results, use_container_width=True)
 
 
-# --- Documents Tab --------------------------------------------------------
+# --- 2. Documents Tab -----------------------------------------------------
 with tab_docs:
     st.subheader("Document Index Manager")
 
@@ -239,12 +249,12 @@ with tab_docs:
     # Top Action Bar
     btn_col1, btn_col2, btn_col3 = st.columns([1, 1.5, 2])
     with btn_col1:
-        if st.button("🔄 Refresh List", use_container_width=True):
+        if st.button("🔄 Refresh List", use_container_width=True, key="btn_refresh_docs"):
             st.rerun()
 
     with btn_col2:
         if duplicate_count > 0:
-            if st.button("🧹 Remove Duplicates", use_container_width=True, help="Keeps newest version and removes duplicate older uploads"):
+            if st.button("🧹 Remove Duplicates", use_container_width=True, key="btn_remove_duplicates", help="Keeps newest version and removes duplicate older uploads"):
                 deleted_dup_count = 0
                 for items in duplicates:
                     sorted_items = sorted(items, key=lambda x: x.get("upload_time") or "", reverse=True)
@@ -260,8 +270,8 @@ with tab_docs:
 
     with btn_col3:
         with st.expander("⚠️ Clear Entire Index"):
-            confirm_clear = st.checkbox("Confirm: Delete ALL documents from vector database?")
-            if confirm_clear and st.button("🗑️ Wipe All Documents", type="primary"):
+            confirm_clear = st.checkbox("Confirm: Delete ALL documents from vector database?", key="chk_confirm_wipe_all")
+            if confirm_clear and st.button("🗑️ Wipe All Documents", type="primary", key="btn_wipe_all_docs"):
                 try:
                     r = requests.delete(f"{API_URL}/documents", timeout=60)
                     if r.ok:
@@ -274,37 +284,8 @@ with tab_docs:
 
     st.markdown("---")
 
-    # Quick Upload & Index Expander inside Documents Tab
-    with st.expander("📥 Upload & Index Documents", expanded=False):
-        quick_files = st.file_uploader(
-            "Upload and index documents immediately",
-            type=["pdf", "txt", "md", "docx"],
-            accept_multiple_files=True,
-            key="quick_upload_docs",
-        )
-        if quick_files and st.button("Index Uploaded Files", key="btn_quick_upload", type="primary"):
-            with st.spinner("Indexing uploaded files..."):
-                errors = []
-                for qf in quick_files:
-                    try:
-                        resp = requests.post(
-                            f"{API_URL}/upload",
-                            files={"file": (qf.name, qf.getvalue())},
-                            timeout=300,
-                        )
-                        if not resp.ok:
-                            errors.append(f"{qf.name}: {resp.text[:100]}")
-                    except Exception as exc:
-                        errors.append(f"{qf.name}: {exc}")
-                if errors:
-                    for err in errors:
-                        st.error(f"Upload error: {err}")
-                else:
-                    st.success("Upload and indexing completed!")
-                    st.rerun()
-
     if not docs:
-        st.info("No documents are currently indexed in the vector store. Upload or index files above to get started.")
+        st.info("No documents are currently indexed in the vector store. Upload files in the 'Upload & Index' tab to get started.")
     else:
         # Overview Table
         st.subheader("Current Documents Overview")
@@ -328,8 +309,8 @@ with tab_docs:
                 f"{d.get('document_name')} ({d.get('document_id')})": d.get("document_id")
                 for d in docs
             }
-            inspect_target = st.selectbox("Select document to inspect:", options=list(inspect_doc_options.keys()))
-            if inspect_target and st.button("Inspect Content"):
+            inspect_target = st.selectbox("Select document to inspect:", options=list(inspect_doc_options.keys()), key="select_inspect_doc")
+            if inspect_target and st.button("Inspect Content", key="btn_inspect_doc"):
                 target_id = inspect_doc_options[inspect_target]
                 try:
                     r = requests.get(f"{API_URL}/documents/{target_id}/inspect", timeout=30)
@@ -390,12 +371,13 @@ with tab_docs:
                 "Select one or more documents to delete:",
                 options=list(doc_options.keys()),
                 help="Choose documents to delete them together",
+                key="select_batch_delete_docs",
             )
         with col_del2:
             st.write("")
             st.write("")
             if selected_to_delete:
-                if st.button("🗑️ Delete Selected", type="primary", use_container_width=True):
+                if st.button("🗑️ Delete Selected", type="primary", use_container_width=True, key="btn_batch_delete"):
                     doc_ids_to_del = [doc_options[k] for k in selected_to_delete]
                     try:
                         r = requests.post(
@@ -449,7 +431,7 @@ with tab_docs:
                             st.error(f"Error: {exc}")
 
 
-# --- Ask ------------------------------------------------------------------
+# --- 3. Ask Tab -----------------------------------------------------------
 with tab_qa:
     st.subheader("Ask a question")
 
@@ -463,11 +445,12 @@ with tab_qa:
         selected_filter = st.selectbox(
             "Filter Context by Document (Optional):",
             options=list(filter_options.keys()),
+            key="select_filter_doc_qa",
         )
         filter_doc_id = filter_options[selected_filter]
 
-    question = st.text_input("Your question")
-    if question and st.button("Get answer", type="primary"):
+    question = st.text_input("Your question", key="input_qa_question")
+    if question and st.button("Get answer", type="primary", key="btn_get_answer"):
         with st.spinner("Searching documents & generating answer..."):
             try:
                 payload = {"query": question}
@@ -482,7 +465,7 @@ with tab_qa:
                     if not data.get("sufficient_context", True):
                         st.warning("Insufficient context — answer not grounded in documents.")
                     st.markdown("### Sources")
-                    if data["sources"]:
+                    if data.get("sources"):
                         for s in data["sources"]:
                             st.markdown(
                                 f"- 📄 **{s['document']}** — Page {s.get('page', 'n/a')}"
@@ -491,16 +474,20 @@ with tab_qa:
                         st.caption("No sources cited.")
                 else:
                     st.error(f"Error {resp.status_code}: {resp.text}")
+            except requests.exceptions.Timeout:
+                st.error("Request timed out waiting for the LLM response (>120s).")
+            except requests.exceptions.ConnectionError:
+                st.error(f"Connection error: Could not reach backend at {API_URL}.")
             except requests.RequestException as exc:
                 st.error(f"Request failed: {exc}")
 
 
-# --- Evaluation -----------------------------------------------------------
+# --- 4. Evaluation Tab ----------------------------------------------------
 with tab_eval:
     st.subheader("Evaluation & monitoring")
     try:
-        m = requests.get(f"{API_URL}/metrics", timeout=30).json()
-        summary = m["summary"]
+        m = requests.get(f"{API_URL}/metrics", timeout=15).json()
+        summary = m.get("summary", {})
         c1, c2, c3 = st.columns(3)
         c1.metric("Queries served", summary.get("query_count", 0))
         c2.metric("Avg total latency (ms)", summary.get("avg_total_latency_ms") or 0)
@@ -510,13 +497,15 @@ with tab_eval:
         c5.metric("Avg retrieved chunks", summary.get("avg_retrieved_chunks") or 0)
         c6.metric("Insufficient-context rate", summary.get("insufficient_context_rate") or 0)
         st.markdown("#### Active configuration")
-        st.json(m["config"])
+        st.json(m.get("config", {}))
         st.markdown("#### Recent queries")
-        st.dataframe(m["recent"], use_container_width=True)
+        st.dataframe(m.get("recent", []), use_container_width=True)
         st.info(
             "Ragas scores (Context Recall, Faithfulness, Answer Relevancy) are "
             "produced by running `python -m app.evaluation.ragas_eval` and are "
             "saved under data/evaluation/results/."
         )
+    except requests.exceptions.ConnectionError:
+        st.error(f"Could not reach backend at {API_URL}. Backend server is offline.")
     except requests.RequestException as exc:
-        st.error(f"Could not reach backend: {exc}")
+        st.error(f"Could not retrieve metrics: {exc}")
