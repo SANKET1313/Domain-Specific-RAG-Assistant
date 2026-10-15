@@ -25,3 +25,4 @@ qdrant_storage/
 .vscode/
 .agents/
 .gemini/
+skills-lock.json
