@@ -28,7 +28,11 @@ class NvidiaLLMProvider(BaseLLM):
     def __init__(self) -> None:
         settings = get_settings()
         self._api_key = (settings.nvidia_api_key or "").strip()
-        self._model = settings.llm_model or "meta/llama-3.2-11b-vision-instruct"
+        self._model = (
+            settings.llm_model
+            or (settings.nvidia_model if settings.nvidia_model and "embed" not in settings.nvidia_model.lower() else None)
+            or "meta/llama-3.2-11b-vision-instruct"
+        )
         self._fallback_model = getattr(settings, "llm_fallback_model", "openai/gpt-oss-20b")
         self._base_url = (settings.nvidia_base_url or "https://integrate.api.nvidia.com/v1").rstrip("/")
         self._default_temp = getattr(settings, "llm_temperature", 0.2)
