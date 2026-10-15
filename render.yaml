@@ -11,7 +11,7 @@ services:
         value: "Company Policy Assistant"
       - key: NVIDIA_API_KEY
         sync: false
-      - key: NVIDIA_MODEL
+      - key: LLM_MODEL
         value: meta/llama-3.2-11b-vision-instruct
       - key: EMBEDDING_MODEL
         value: nemotron-3-embed-1b
