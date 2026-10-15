@@ -157,7 +157,7 @@ def check_backend_health() -> tuple[bool, str]:
     if not (API_URL.startswith("http://") or API_URL.startswith("https://")):
         return False, f"Invalid API_URL format: '{API_URL}'. Must begin with http:// or https://"
 
-    if os.getenv("RENDER") and ("localhost" in API_URL or "127.0.0.1" in API_URL):
+    if os.getenv("RENDER") and not os.getenv("INTERNAL_BACKEND") and ("localhost" in API_URL or "127.0.0.1" in API_URL):
         return False, (
             f"API_URL is set to '{API_URL}' on Render. In separate-service deployment on Render, "
             "'localhost' refers to the frontend container itself. Set API_URL in the Render dashboard "
