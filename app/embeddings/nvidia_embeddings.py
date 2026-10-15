@@ -72,12 +72,11 @@ class NVIDIAEmbedder(BaseEmbedder):
     ) -> None:
         settings = get_settings()
         self._api_key = api_key or settings.nvidia_api_key
-        self._raw_model = (
-            model
-            or settings.nvidia_model
-            or settings.embedding_model
-            or "nemotron-3-embed-1b"
-        )
+        cand_model = model or settings.embedding_model
+        # Guard against accidentally using a generative/chat model for embeddings
+        if not cand_model or any(tag in cand_model.lower() for tag in ("llama", "gpt", "instruct", "chat", "vision")):
+            cand_model = "nemotron-3-embed-1b"
+        self._raw_model = cand_model
         self._model = _normalize_model_name(self._raw_model)
         self._base_url = (settings.nvidia_base_url or "https://integrate.api.nvidia.com/v1").rstrip("/")
         self._dim = (
