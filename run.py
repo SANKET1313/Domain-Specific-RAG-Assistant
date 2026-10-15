@@ -49,6 +49,7 @@ def main() -> None:
     if not raw_api_url:
         api_url = f"http://127.0.0.1:{backend_port}"
         os.environ["API_URL"] = api_url
+        os.environ["INTERNAL_BACKEND"] = "true"
     else:
         api_url = raw_api_url.rstrip("/")
 
