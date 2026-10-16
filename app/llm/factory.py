@@ -22,6 +22,10 @@ def get_llm() -> BaseLLM:
         from app.llm.anthropic_provider import AnthropicProvider
 
         return AnthropicProvider()
+    if provider == "groq":
+        from app.llm.groq_provider import GroqProvider
+
+        return GroqProvider()
     if provider in ("modal", "huggingface"):
         from app.llm.modal_provider import ModalProvider
 
