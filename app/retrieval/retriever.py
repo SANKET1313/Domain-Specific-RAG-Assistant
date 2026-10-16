@@ -65,6 +65,10 @@ def retrieve(query: str, flt: Optional[dict[str, Any]] = None) -> list[Candidate
     target_sec_id = analysis.target_section_id
     target_doc_id = flt.get("document_id") if flt else None
 
+    # If document_id filter is specified, enforce strict isolation on candidate set
+    if target_doc_id:
+        candidates = [c for c in candidates if c.metadata.get("document_id") == target_doc_id]
+
     if not target_sec_id and candidates:
         top_cand = candidates[0]
         top_sec = top_cand.metadata.get("section_id")
@@ -74,14 +78,16 @@ def retrieve(query: str, flt: Optional[dict[str, Any]] = None) -> list[Candidate
             norm_h = " ".join(re.findall(r"[a-z0-9]+", top_sec_h.lower()))
             if (norm_h and norm_h in norm_q) or (norm_q and norm_q in norm_h):
                 target_sec_id = top_sec
-                target_doc_id = top_cand.metadata.get("document_id")
+                if not target_doc_id:
+                    target_doc_id = top_cand.metadata.get("document_id")
             else:
                 q_words = set(norm_q.split())
                 h_words = set(norm_h.split())
                 overlap = len(q_words & h_words)
                 if overlap >= 3 and overlap / max(1, len(h_words)) >= 0.5:
                     target_sec_id = top_sec
-                    target_doc_id = top_cand.metadata.get("document_id")
+                    if not target_doc_id:
+                        target_doc_id = top_cand.metadata.get("document_id")
 
     if target_sec_id:
         if not target_doc_id and candidates:
@@ -95,6 +101,9 @@ def retrieve(query: str, flt: Optional[dict[str, Any]] = None) -> list[Candidate
             sec_candidates: list[Candidate] = []
             seen_ids = set()
             for idx, sc in enumerate(sec_chunks):
+                # Ensure section chunks adhere to target_doc_id if filtered
+                if target_doc_id and sc.get("document_id") != target_doc_id:
+                    continue
                 cid = sc.get("chunk_id", f"sec_chunk_{idx}")
                 seen_ids.add(cid)
                 p_num = sc.get("page_number", 1)
@@ -118,5 +127,8 @@ def retrieve(query: str, flt: Optional[dict[str, Any]] = None) -> list[Candidate
 
             other_candidates = [c for c in candidates if c.chunk_id not in seen_ids]
             candidates = sec_candidates + other_candidates
+
+    if target_doc_id:
+        candidates = [c for c in candidates if c.metadata.get("document_id") == target_doc_id]
 
     return candidates
