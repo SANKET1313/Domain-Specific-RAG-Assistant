@@ -29,6 +29,12 @@ class QueryResponse(BaseModel):
     sufficient_context: bool
     metrics: dict[str, Any]
     contexts: list[str] = []
+    supporting_evidence: Optional[str] = None
+    source_document_id: Optional[str] = None
+    source_document_name: Optional[str] = None
+    source_pages: Optional[list[Any]] = None
+    insufficient_evidence: bool = False
+    diagnostic_report: Optional[dict[str, Any]] = None
     debug: Optional[dict[str, Any]] = None
 
 
@@ -52,8 +58,14 @@ class UploadResponse(BaseModel):
     total_pages: int = 1
     pages_digital: int = 1
     pages_ocr: int = 0
+    pages_recovered: int = 0
+    pages_blank: int = 0
+    pages_unrecoverable: int = 0
+    pages_requiring_attention: list[int] = []
     document_type: str = "digital"
     warnings: list[str] = []
+    recovery_log: list[str] = []
+    ingestion_summary: Optional[dict[str, Any]] = None
     markdown_path: Optional[str] = None
 
 
