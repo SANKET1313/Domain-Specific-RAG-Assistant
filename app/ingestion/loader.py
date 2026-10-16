@@ -47,11 +47,14 @@ class ExtractionError(RuntimeError):
 class ExtractedPage:
     page_number: int
     text: str
-    method: str  # "digital" | "vision_ocr" | "local_ocr" | "mixed_ocr"
+    method: str  # "digital" | "vision_ocr" | "local_ocr" | "mixed_ocr" | "blank" | "unrecoverable"
     char_count: int
     word_count: int
     dpi_used: int = 0
     warning: Optional[str] = None
+    status: str = "digital"  # "digital" | "recovered" | "partial" | "blank" | "unrecoverable"
+    confidence: float = 1.0
+    recovery_reason: Optional[str] = None
 
 
 @dataclass
@@ -59,12 +62,17 @@ class DocumentExtractionSummary:
     path: str
     total_pages: int = 0
     pages_digital: int = 0
+    pages_recovered: int = 0
+    pages_blank: int = 0
+    pages_unrecoverable: int = 0
     pages_ocr_vision: int = 0
     pages_ocr_local: int = 0
     pages_failed: int = 0
     total_chars: int = 0
     total_words: int = 0
     document_type: str = "digital"  # "digital" | "scanned" | "mixed" | "empty"
+    pages_requiring_attention: list[int] = field(default_factory=list)
+    recovery_log: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -131,10 +139,107 @@ def _ocr_page_with_local(pixmap_bytes: bytes) -> str:
     return ""
 
 
-def _ocr_page_with_vision(pixmap_bytes: bytes) -> str:
+VISION_PRIMARY_PROMPT = (
+    "You are an expert document extraction engine. Transcribe and extract ALL text, headings, "
+    "bullet points, numbered lists, tables, labels, and metadata from this document page image "
+    "into clean Markdown format.\n"
+    "Guidelines:\n"
+    "- Maintain the exact original reading order.\n"
+    "- Transcribe complete tables using standard Markdown table syntax (| Header 1 | Header 2 |) with all rows intact.\n"
+    "- Preserve headings and subheadings using Markdown headers (#, ##, ###).\n"
+    "- Preserve bulleted lists (-) and numbered lists (1., 2.).\n"
+    "- Extract everything verbatim. Do NOT summarize, shorten, or omit content.\n"
+    "- Do NOT invent, assume, or hallucinate missing text. Only transcribe visible content."
+)
+
+VISION_RECOVERY_PROMPT = (
+    "Transcribe every piece of readable text, title, heading, table, bullet point, or label "
+    "from this document page image verbatim into Markdown.\n"
+    "Carefully extract text from low-contrast areas, stylized fonts, banners, covers, or degraded scans. "
+    "Preserve structure, tables, and line breaks. Do not summarize or guess missing characters."
+)
+
+
+def is_page_blank(page, pixmap=None) -> bool:
+    """Determine whether a PDF page is genuinely blank.
+    
+    A page is considered genuinely blank if:
+    1. It has no digital text.
+    2. It has no embedded images.
+    3. It has no visible vector drawings.
+    4. Its rendered pixmap is uniform (standard deviation of pixel values < 2.0).
+    """
+    # 1. Digital text check
+    if hasattr(page, "get_text") and page.get_text().strip():
+        return False
+
+    # 2. Embedded images check
+    if hasattr(page, "get_images") and len(page.get_images()) > 0:
+        return False
+
+    # 3. Vector drawings check
+    if hasattr(page, "get_drawings"):
+        drawings = page.get_drawings()
+        for d in drawings:
+            fill = d.get("fill")
+            color = d.get("color")
+            if fill and fill != (1.0, 1.0, 1.0) and fill != (1, 1, 1):
+                return False
+            if color and color != (1.0, 1.0, 1.0) and color != (1, 1, 1):
+                return False
+
+    # 4. Visual pixel variance check on rendered pixmap
+    if pixmap is not None:
+        try:
+            import numpy as np
+            samples = pixmap.samples
+            arr = np.frombuffer(samples, dtype=np.uint8)
+            if float(arr.std()) < 2.0:
+                return True
+            return False
+        except Exception:
+            try:
+                samples = pixmap.samples
+                if len(samples) > 200:
+                    step = max(1, len(samples) // 500)
+                    subset = samples[::step]
+                    if max(subset) - min(subset) < 5:
+                        return True
+            except Exception:
+                pass
+
+    return False
+
+
+def _preprocess_image_for_ocr(img_bytes: bytes) -> bytes:
+    """Enhance contrast and sharpness for difficult-to-read, low-contrast, or degraded scans."""
+    try:
+        import io
+        from PIL import Image, ImageEnhance
+
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        enhancer = ImageEnhance.Contrast(img)
+        img = enhancer.enhance(1.6)
+        enhancer = ImageEnhance.Sharpness(img)
+        img = enhancer.enhance(1.4)
+        out = io.BytesIO()
+        img.save(out, format="PNG")
+        return out.getvalue()
+    except Exception as exc:
+        logger.debug("Image preprocessing skipped: %s", exc)
+        return img_bytes
+
+
+def _ocr_page_with_vision(
+    pixmap_bytes: bytes,
+    prompt: Optional[str] = None,
+    timeout: Optional[int] = None,
+) -> str:
     """Send page image to configured vision LLM (NVIDIA NIM or OpenAI)."""
     settings = get_settings()
     img_b64 = base64.b64encode(pixmap_bytes).decode("utf-8")
+    actual_prompt = prompt or VISION_PRIMARY_PROMPT
+    req_timeout = timeout or getattr(settings, "ocr_timeout", 60)
 
     # 1. NVIDIA NIM Vision model
     if settings.nvidia_api_key and settings.nvidia_api_key not in (
@@ -148,22 +253,18 @@ def _ocr_page_with_vision(pixmap_bytes: bytes) -> str:
             "Authorization": f"Bearer {settings.nvidia_api_key}",
             "Content-Type": "application/json",
         }
+        vision_model = (
+            settings.llm_model
+            if (settings.llm_model and "vision" in settings.llm_model.lower())
+            else "meta/llama-3.2-11b-vision-instruct"
+        )
         payload = {
-            "model": "meta/llama-3.2-11b-vision-instruct",
+            "model": vision_model,
             "messages": [
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": "text",
-                            "text": (
-                                "Transcribe and extract ALL text, tables, headings, bullet points, numbers, "
-                                "labels, and URLs from this document page or image accurately.\n"
-                                "If there are tables, transcribe the complete table into clean Markdown format "
-                                "with all columns, rows, headers, and descriptions preserved.\n"
-                                "Do not summarize, omit, or shorten any rows or entries. Extract everything verbatim."
-                            ),
-                        },
+                        {"type": "text", "text": actual_prompt},
                         {
                             "type": "image_url",
                             "image_url": {"url": f"data:image/png;base64,{img_b64}"},
@@ -171,17 +272,19 @@ def _ocr_page_with_vision(pixmap_bytes: bytes) -> str:
                     ],
                 }
             ],
-            "max_tokens": 2500,
+            "max_tokens": getattr(settings, "llm_max_tokens", 2500),
             "temperature": 0.1,
         }
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=90)
+            resp = requests.post(url, headers=headers, json=payload, timeout=req_timeout)
             if resp.status_code == 200:
                 data = resp.json()
                 return _sanitize_ocr_text(data["choices"][0]["message"]["content"])
-            logger.warning("NVIDIA Vision API returned HTTP %s: %s", resp.status_code, resp.text[:200])
+            safe_err = resp.text[:200].replace(settings.nvidia_api_key, "[REDACTED]")
+            logger.warning("NVIDIA Vision API returned HTTP %s: %s", resp.status_code, safe_err)
         except Exception as exc:
-            logger.warning("NVIDIA Vision API network error: %s", exc)
+            safe_exc = str(exc).replace(settings.nvidia_api_key, "[REDACTED]")
+            logger.warning("NVIDIA Vision API network error: %s", safe_exc)
 
     # 2. OpenAI Vision fallback
     if settings.openai_api_key and not settings.openai_api_key.startswith("YOUR_"):
@@ -196,13 +299,7 @@ def _ocr_page_with_vision(pixmap_bytes: bytes) -> str:
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": "text",
-                            "text": (
-                                "Transcribe and extract ALL text, diagrams, tables, and content from this document page "
-                                "or image into Markdown. Do not omit any table rows or details."
-                            ),
-                        },
+                        {"type": "text", "text": actual_prompt},
                         {
                             "type": "image_url",
                             "image_url": {"url": f"data:image/png;base64,{img_b64}"},
@@ -213,14 +310,87 @@ def _ocr_page_with_vision(pixmap_bytes: bytes) -> str:
             "max_tokens": 2500,
         }
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=90)
+            resp = requests.post(url, headers=headers, json=payload, timeout=req_timeout)
             if resp.status_code == 200:
                 data = resp.json()
                 return _sanitize_ocr_text(data["choices"][0]["message"]["content"])
+            safe_err = resp.text[:200].replace(settings.openai_api_key, "[REDACTED]")
+            logger.warning("OpenAI Vision API returned HTTP %s: %s", resp.status_code, safe_err)
         except Exception as exc:
-            logger.warning("OpenAI Vision API error: %s", exc)
+            safe_exc = str(exc).replace(settings.openai_api_key, "[REDACTED]")
+            logger.warning("OpenAI Vision API error: %s", safe_exc)
 
     raise RuntimeError("No configured vision service succeeded (timeout, rate limit, or invalid credentials).")
+
+
+def _recover_page_content(
+    pixmap_bytes: bytes,
+    high_res_bytes: Optional[bytes] = None,
+    engine: Optional[str] = None,
+    prefer_local: bool = False,
+) -> tuple[str, str, str, float, str]:
+    """Execute multi-tier extraction & recovery pipeline.
+    
+    Returns:
+        tuple of (extracted_text, method_used, status, confidence, note)
+        status: "recovered" | "partial" | "unrecoverable"
+    """
+    settings = get_settings()
+    active_engine = (engine or settings.ocr_engine).lower()
+
+    if active_engine == "none":
+        return "", "none", "unrecoverable", 0.0, "OCR engine set to none"
+
+    # Fast path for embedded images when prefer_local is requested
+    if prefer_local or active_engine == "local":
+        try:
+            loc_text = _ocr_page_with_local(pixmap_bytes)
+            if len(loc_text.split()) < 15 and high_res_bytes is not None:
+                high_text = _ocr_page_with_local(high_res_bytes)
+                if len(high_text.split()) > len(loc_text.split()):
+                    loc_text = high_text
+            if loc_text and len(loc_text.strip()) >= 15:
+                return loc_text.strip(), "local_ocr", "recovered", 0.85, "Recovered via local OCR engine"
+        except Exception:
+            pass
+
+    # Tier 1: Try Vision Model extraction if enabled
+    if active_engine in ("auto", "vision"):
+        try:
+            v_text = _ocr_page_with_vision(pixmap_bytes, prompt=VISION_PRIMARY_PROMPT)
+            if v_text and len(v_text.strip()) >= 15:
+                return v_text.strip(), "vision_ocr", "recovered", 0.95, "Successfully recovered via AI Vision extraction"
+        except Exception as v_err:
+            logger.info("Vision primary attempt failed: %s. Retrying with enhanced preprocessing...", v_err)
+
+        # Tier 1 Retry: Preprocess image (contrast/sharpness) and retry with secondary prompt
+        try:
+            target_bytes = high_res_bytes or pixmap_bytes
+            enhanced_bytes = _preprocess_image_for_ocr(target_bytes)
+            v_text_retry = _ocr_page_with_vision(enhanced_bytes, prompt=VISION_RECOVERY_PROMPT)
+            if v_text_retry and len(v_text_retry.strip()) >= 15:
+                return v_text_retry.strip(), "vision_ocr", "recovered", 0.90, "Recovered via AI Vision retry with enhanced contrast"
+        except Exception as retry_err:
+            logger.info("Vision retry attempt failed: %s. Falling back to local OCR engine...", retry_err)
+
+    # Tier 2: Local OCR fallback (RapidOCR / pytesseract)
+    if active_engine in ("auto", "local"):
+        try:
+            loc_text = _ocr_page_with_local(pixmap_bytes)
+            # If text is sparse and high_res is available, try high_res
+            if len(loc_text.split()) < 15 and high_res_bytes is not None:
+                high_text = _ocr_page_with_local(high_res_bytes)
+                if len(high_text.split()) > len(loc_text.split()):
+                    loc_text = high_text
+
+            if loc_text and len(loc_text.strip()) >= 15:
+                return loc_text.strip(), "local_ocr", "recovered", 0.85, "Recovered via local OCR engine"
+            elif loc_text and len(loc_text.strip()) > 0:
+                return loc_text.strip(), "local_ocr", "partial", 0.60, f"Partially recovered via local OCR ({len(loc_text.strip())} chars)"
+        except Exception as loc_err:
+            logger.warning("Local OCR fallback failed: %s", loc_err)
+
+    return "", "failed", "unrecoverable", 0.0, "Document scan contained no decipherable text across AI Vision and OCR passes"
 
 
 def _ocr_page(
@@ -229,50 +399,17 @@ def _ocr_page(
     prefer_local: bool = False,
 ) -> tuple[str, str]:
     """Execute OCR according to configured strategy (auto, vision, local).
-
-    Returns:
-        tuple of (extracted_text, method_used)
+    
+    Maintains backward compatibility with older callers and tests.
     """
     settings = get_settings()
-    engine = settings.ocr_engine.lower()
-
-    if engine == "none":
-        return "", "none"
-
-    # Fast path: try local OCR first if prefer_local is requested or engine is local
-    if prefer_local or engine == "local":
-        text = _ocr_page_with_local(pixmap_bytes)
-        if text and len(text.strip()) > 10:
-            return text.strip(), "local_ocr"
-        # If local OCR produced sparse text on an embedded image, don't waste time on cloud vision
-        if prefer_local and engine != "vision":
-            if high_res_bytes:
-                high_text = _ocr_page_with_local(high_res_bytes)
-                if len(high_text.strip()) > len(text.strip()):
-                    return high_text.strip(), "local_ocr"
-            return text.strip(), ("local_ocr" if text.strip() else "none")
-
-    if engine in ("auto", "vision"):
-        try:
-            text = _ocr_page_with_vision(pixmap_bytes)
-            if text and len(text.strip()) > 10:
-                return text.strip(), "vision_ocr"
-        except Exception as exc:
-            logger.info("Vision OCR unavailable (%s); attempting local OCR fallback...", exc)
-
-    if engine in ("auto", "local"):
-        # First try standard resolution
-        text = _ocr_page_with_local(pixmap_bytes)
-        # If text is very sparse (< 15 words) and high_res is available, retry with high_res
-        if len(text.split()) < 15 and high_res_bytes is not None:
-            high_text = _ocr_page_with_local(high_res_bytes)
-            if len(high_text.split()) > len(text.split()):
-                text = high_text
-
-        if text and len(text.strip()) > 5:
-            return text.strip(), "local_ocr"
-
-    return "", "failed"
+    engine = "local" if prefer_local and settings.ocr_engine != "vision" else settings.ocr_engine
+    text, method, _, _, _ = _recover_page_content(
+        pixmap_bytes=pixmap_bytes,
+        high_res_bytes=high_res_bytes,
+        engine=engine,
+    )
+    return text, method
 
 
 def _extract_page_digital(page) -> str:
@@ -351,24 +488,31 @@ def load_pages_detailed(path: str) -> tuple[list[ExtractedPage], DocumentExtract
     """Extract text from a document page-by-page, returning detailed diagnostic metrics."""
     ext = Path(path).suffix.lower()
     summary = DocumentExtractionSummary(path=path)
+    settings = get_settings()
 
     # 1. Standalone image files (.png, .jpg, .jpeg, .webp, .bmp, .tiff)
     if ext in IMAGE_EXTENSIONS:
         try:
             image_bytes = Path(path).read_bytes()
-            ocr_text, method = _ocr_page(image_bytes)
-            if not ocr_text.strip():
-                raise ExtractionError(f"Image '{Path(path).name}' contains no readable text or OCR failed.")
+            rec_txt, method, status, conf, note = _recover_page_content(
+                image_bytes, engine=settings.ocr_engine
+            )
+            if not rec_txt.strip():
+                raise ExtractionError(f"Image '{Path(path).name}' contains no readable text or recovery failed.")
 
             p = ExtractedPage(
                 page_number=1,
-                text=ocr_text.strip(),
+                text=rec_txt.strip(),
                 method=method,
-                char_count=len(ocr_text.strip()),
-                word_count=len(ocr_text.strip().split()),
+                char_count=len(rec_txt.strip()),
+                word_count=len(rec_txt.strip().split()),
                 dpi_used=0,
+                status="recovered",
+                confidence=conf,
+                recovery_reason=note,
             )
             summary.total_pages = 1
+            summary.pages_recovered = 1
             if method == "vision_ocr":
                 summary.pages_ocr_vision = 1
             elif method == "local_ocr":
@@ -378,6 +522,7 @@ def load_pages_detailed(path: str) -> tuple[list[ExtractedPage], DocumentExtract
             summary.total_chars = p.char_count
             summary.total_words = p.word_count
             summary.document_type = "scanned"
+            summary.recovery_log.append(f"Page 1: {note} ({p.char_count} chars).")
             return [p], summary
         except ExtractionError:
             raise
@@ -394,6 +539,8 @@ def load_pages_detailed(path: str) -> tuple[list[ExtractedPage], DocumentExtract
                 method="digital",
                 char_count=len(t),
                 word_count=len(t.split()),
+                status="digital",
+                confidence=1.0,
             )
             for pn, t in raw_pages
         ]
@@ -426,7 +573,9 @@ def load_pages_detailed(path: str) -> tuple[list[ExtractedPage], DocumentExtract
                 page_local_used = False
 
                 img_list = page.get_images(full=True)
-                if img_list:
+                # Only check for embedded infographics/tables if page has sufficient digital text (mixed page).
+                # Scanned or image-only pages go directly to high-DPI full page recovery in Scenario D.
+                if img_list and len(digital_text) >= settings.ocr_trigger_char_threshold:
                     page_area = page.rect.width * page.rect.height
                     for img_item in img_list:
                         xref = img_item[0]
@@ -440,9 +589,11 @@ def load_pages_detailed(path: str) -> tuple[list[ExtractedPage], DocumentExtract
                                     img_data = doc.extract_image(xref)
                                     if img_data and img_data.get("image"):
                                         img_bytes = img_data["image"]
-                                        ocr_res, method = _ocr_page(img_bytes, prefer_local=True)
-                                        if ocr_res and len(ocr_res.strip()) > 15:
-                                            embedded_ocr_texts.append(ocr_res.strip())
+                                        rec_res, method, _, _, _ = _recover_page_content(
+                                            img_bytes, engine=settings.ocr_engine, prefer_local=True
+                                        )
+                                        if rec_res and len(rec_res.strip()) > 10:
+                                            embedded_ocr_texts.append(rec_res.strip())
                                             if method == "vision_ocr":
                                                 page_vision_used = True
                                             elif method == "local_ocr":
@@ -459,11 +610,15 @@ def load_pages_detailed(path: str) -> tuple[list[ExtractedPage], DocumentExtract
                     for img_txt in embedded_ocr_texts:
                         combined_text = f"{combined_text}\n\n[Extracted Table / Image Content]\n{img_txt}".strip()
                     summary.pages_digital += 1
+                    summary.pages_recovered += 1
                     if page_vision_used:
                         summary.pages_ocr_vision += 1
                     elif page_local_used:
                         summary.pages_ocr_local += 1
 
+                    summary.recovery_log.append(
+                        f"Page {i}: Recovered embedded table/image content ({sum(len(t) for t in embedded_ocr_texts)} chars)."
+                    )
                     extracted_pages.append(
                         ExtractedPage(
                             page_number=i,
@@ -472,12 +627,15 @@ def load_pages_detailed(path: str) -> tuple[list[ExtractedPage], DocumentExtract
                             char_count=len(combined_text),
                             word_count=len(combined_text.split()),
                             dpi_used=0,
+                            status="recovered",
+                            confidence=0.95,
+                            recovery_reason="Extracted digital text + embedded table/image content",
                         )
                     )
                     continue
 
                 # Scenario B: Pure digital text page (sufficient text and no significant image content)
-                if len(digital_text) >= settings.ocr_trigger_char_threshold:
+                if len(digital_text) >= settings.ocr_trigger_char_threshold and not has_significant_images:
                     summary.pages_digital += 1
                     extracted_pages.append(
                         ExtractedPage(
@@ -486,6 +644,8 @@ def load_pages_detailed(path: str) -> tuple[list[ExtractedPage], DocumentExtract
                             method="digital",
                             char_count=len(digital_text),
                             word_count=len(digital_text.split()),
+                            status="digital",
+                            confidence=1.0,
                         )
                     )
                     continue
@@ -495,6 +655,7 @@ def load_pages_detailed(path: str) -> tuple[list[ExtractedPage], DocumentExtract
                     ocr_text = "\n\n".join(embedded_ocr_texts)
                     final_text = ocr_text or digital_text
                     final_method = "vision_ocr" if page_vision_used else ("local_ocr" if page_local_used else "digital")
+                    summary.pages_recovered += 1
                     if final_method == "vision_ocr":
                         summary.pages_ocr_vision += 1
                     elif final_method == "local_ocr":
@@ -502,6 +663,7 @@ def load_pages_detailed(path: str) -> tuple[list[ExtractedPage], DocumentExtract
                     else:
                         summary.pages_digital += 1
 
+                    summary.recovery_log.append(f"Page {i}: Recovered content from embedded images ({len(final_text)} chars).")
                     extracted_pages.append(
                         ExtractedPage(
                             page_number=i,
@@ -510,13 +672,16 @@ def load_pages_detailed(path: str) -> tuple[list[ExtractedPage], DocumentExtract
                             char_count=len(final_text),
                             word_count=len(final_text.split()),
                             dpi_used=0,
+                            status="recovered",
+                            confidence=0.95,
+                            recovery_reason="Extracted content from embedded images",
                         )
                     )
                     continue
 
-                # Scenario D: Scanned page or minimal digital text — render pixmap on demand
+                # Scenario D: Minimal/empty digital text — inspect for blank vs image/scan content
                 logger.info(
-                    "Page %d of '%s' has %d chars (below threshold %d). Applying OCR...",
+                    "Page %d of '%s' has %d chars (below threshold %d). Inspecting for content...",
                     i, Path(path).name, len(digital_text), settings.ocr_trigger_char_threshold,
                 )
 
@@ -524,65 +689,111 @@ def load_pages_detailed(path: str) -> tuple[list[ExtractedPage], DocumentExtract
                 pix_high = None
                 try:
                     pix = page.get_pixmap(dpi=settings.ocr_default_dpi)
+
+                    # 1. Distinguish genuinely blank pages
+                    if is_page_blank(page, pix):
+                        logger.info("Page %d of '%s' identified as genuinely blank.", i, Path(path).name)
+                        summary.pages_blank += 1
+                        summary.recovery_log.append(f"Page {i}: Verified genuinely blank page.")
+                        extracted_pages.append(
+                            ExtractedPage(
+                                page_number=i,
+                                text="",
+                                method="blank",
+                                char_count=0,
+                                word_count=0,
+                                dpi_used=settings.ocr_default_dpi,
+                                status="blank",
+                                confidence=1.0,
+                                recovery_reason="Genuinely blank page (no text, drawings, or visual content)",
+                            )
+                        )
+                        continue
+
+                    # 2. Non-blank page — run recovery pipeline
                     pix_bytes = pix.tobytes("png")
-
-                    # Run OCR at standard resolution first
-                    ocr_text, method = _ocr_page(pix_bytes, prefer_local=True)
-
-                    # Only if OCR yielded sparse text (< 15 words) and high DPI is configured, retry high res
-                    if len(ocr_text.split()) < 15 and settings.ocr_high_dpi > settings.ocr_default_dpi:
+                    high_bytes = None
+                    if settings.ocr_high_dpi > settings.ocr_default_dpi:
                         try:
                             pix_high = page.get_pixmap(dpi=settings.ocr_high_dpi)
                             high_bytes = pix_high.tobytes("png")
-                            high_ocr_text, high_method = _ocr_page(high_bytes, prefer_local=True)
-                            if len(high_ocr_text.split()) > len(ocr_text.split()):
-                                ocr_text = high_ocr_text
-                                method = high_method
                         except Exception:
-                            pass
+                            high_bytes = None
 
-                    final_text = ocr_text or digital_text
-                    final_method = method if ocr_text else ("digital" if digital_text else "empty")
-
-                    if final_method == "vision_ocr":
-                        summary.pages_ocr_vision += 1
-                    elif final_method == "local_ocr":
-                        summary.pages_ocr_local += 1
-                    elif digital_text:
-                        summary.pages_digital += 1
-                    else:
-                        summary.pages_failed += 1
-                        summary.warnings.append(f"Page {i}: OCR produced no readable text.")
-
-                    page_warn = None
-                    if not final_text.strip():
-                        page_warn = f"Page {i} is unreadable or empty."
-                    elif len(final_text.strip()) < 15 and final_method in ("local_ocr", "vision_ocr"):
-                        page_warn = f"Page {i}: Suspiciously short extraction ({len(final_text.strip())} chars)."
-                        summary.warnings.append(page_warn)
-
-                    extracted_pages.append(
-                        ExtractedPage(
-                            page_number=i,
-                            text=final_text,
-                            method=final_method,
-                            char_count=len(final_text),
-                            word_count=len(final_text.split()),
-                            dpi_used=settings.ocr_default_dpi,
-                            warning=page_warn,
-                        )
+                    rec_txt, rec_method, rec_status, rec_conf, rec_note = _recover_page_content(
+                        pix_bytes,
+                        high_res_bytes=high_bytes,
+                        engine=settings.ocr_engine,
                     )
+
+                    final_text = rec_txt or digital_text
+                    if final_text.strip():
+                        if rec_status == "recovered":
+                            summary.pages_recovered += 1
+                            summary.recovery_log.append(f"Page {i}: {rec_note} ({len(final_text)} chars).")
+                        else:
+                            summary.pages_recovered += 1
+                            summary.pages_requiring_attention.append(i)
+                            summary.warnings.append(f"Page {i}: Partial recovery ({len(final_text)} chars) - {rec_note}.")
+
+                        if rec_method == "vision_ocr":
+                            summary.pages_ocr_vision += 1
+                        elif rec_method == "local_ocr":
+                            summary.pages_ocr_local += 1
+                        else:
+                            summary.pages_digital += 1
+
+                        extracted_pages.append(
+                            ExtractedPage(
+                                page_number=i,
+                                text=final_text,
+                                method=rec_method if rec_txt else "digital",
+                                char_count=len(final_text),
+                                word_count=len(final_text.split()),
+                                dpi_used=settings.ocr_default_dpi,
+                                status=rec_status if rec_txt else "digital",
+                                confidence=rec_conf if rec_txt else 1.0,
+                                recovery_reason=rec_note,
+                            )
+                        )
+                    else:
+                        # Non-blank page where all recovery methods failed
+                        summary.pages_unrecoverable += 1
+                        summary.pages_failed += 1
+                        summary.pages_requiring_attention.append(i)
+                        warn_msg = f"Page {i}: Unrecoverable - {rec_note}."
+                        summary.warnings.append(warn_msg)
+                        extracted_pages.append(
+                            ExtractedPage(
+                                page_number=i,
+                                text="",
+                                method="unrecoverable",
+                                char_count=0,
+                                word_count=0,
+                                dpi_used=settings.ocr_default_dpi,
+                                warning=warn_msg,
+                                status="unrecoverable",
+                                confidence=0.0,
+                                recovery_reason=rec_note,
+                            )
+                        )
                 except Exception as exc:
+                    summary.pages_unrecoverable += 1
                     summary.pages_failed += 1
-                    summary.warnings.append(f"Page {i} OCR error: {exc}")
+                    summary.pages_requiring_attention.append(i)
+                    warn_msg = f"Page {i}: Extraction error - {exc}"
+                    summary.warnings.append(warn_msg)
                     extracted_pages.append(
                         ExtractedPage(
                             page_number=i,
                             text=digital_text,
-                            method="digital" if digital_text else "failed",
+                            method="unrecoverable",
                             char_count=len(digital_text),
                             word_count=len(digital_text.split()),
                             warning=str(exc),
+                            status="unrecoverable",
+                            confidence=0.0,
+                            recovery_reason=f"Processing exception: {exc}",
                         )
                     )
                 finally:
@@ -602,12 +813,14 @@ def load_pages_detailed(path: str) -> tuple[list[ExtractedPage], DocumentExtract
 
     if summary.pages_digital == summary.total_pages:
         summary.document_type = "digital"
-    elif (summary.pages_ocr_vision + summary.pages_ocr_local) == summary.total_pages:
-        summary.document_type = "scanned"
-    elif (summary.pages_digital > 0) and (summary.pages_ocr_vision + summary.pages_ocr_local > 0):
+    elif summary.pages_recovered > 0 and summary.pages_digital > 0:
         summary.document_type = "mixed"
+    elif summary.pages_recovered > 0 and summary.pages_digital == 0:
+        summary.document_type = "scanned"
+    elif summary.pages_blank == summary.total_pages:
+        summary.document_type = "empty"
     else:
-        summary.document_type = "empty" if summary.total_chars == 0 else "scanned"
+        summary.document_type = "digital" if summary.pages_digital > 0 else "scanned"
 
     # Reject document only if 100% of pages produced zero text
     if summary.total_chars == 0:
