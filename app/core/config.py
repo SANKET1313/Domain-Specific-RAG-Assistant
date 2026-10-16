@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     domain_name: str = Field(default="Company Policy Assistant", alias="DOMAIN_NAME")
 
     # ---- LLM provider -----------------------------------------------------
-    llm_provider: str = Field(default="nvidia", alias="LLM_PROVIDER")  # nvidia|modal|openai|anthropic|huggingface
+    llm_provider: str = Field(default="nvidia", alias="LLM_PROVIDER")  # nvidia|groq|modal|openai|anthropic|huggingface
     llm_model: str = Field(default="meta/llama-3.2-11b-vision-instruct", alias="LLM_MODEL")
     llm_fallback_model: str = Field(default="openai/gpt-oss-20b", alias="LLM_FALLBACK_MODEL")
     llm_timeout: int = Field(default=120, alias="LLM_TIMEOUT")
@@ -41,6 +41,11 @@ class Settings(BaseSettings):
 
     openai_api_key: Optional[str] = Field(default=None, alias="OPENAI_API_KEY")
     anthropic_api_key: Optional[str] = Field(default=None, alias="ANTHROPIC_API_KEY")
+
+    # ---- Groq LLM settings -----------------------------------------------
+    groq_api_key: Optional[str] = Field(default=None, alias="GROQ_API_KEY")
+    groq_model: str = Field(default="llama-3.3-70b-versatile", alias="GROQ_MODEL")
+    groq_base_url: str = Field(default="https://api.groq.com/openai/v1", alias="GROQ_BASE_URL")
     
     # ---- Hugging Face & Modal LLM settings --------------------------------
     hf_token: Optional[str] = Field(default=None, alias="HF_TOKEN")
@@ -89,9 +94,11 @@ class Settings(BaseSettings):
 
     # ---- Ingestion & OCR settings ----------------------------------------
     ocr_engine: str = Field(default="auto", alias="OCR_ENGINE")  # auto | vision | local | none
-    ocr_default_dpi: int = Field(default=150, alias="OCR_DEFAULT_DPI")
-    ocr_high_dpi: int = Field(default=250, alias="OCR_HIGH_DPI")
+    ocr_default_dpi: int = Field(default=200, alias="OCR_DEFAULT_DPI")
+    ocr_high_dpi: int = Field(default=300, alias="OCR_HIGH_DPI")
     ocr_trigger_char_threshold: int = Field(default=40, alias="OCR_TRIGGER_CHAR_THRESHOLD")
+    ocr_max_retries: int = Field(default=2, alias="OCR_MAX_RETRIES")
+    ocr_timeout: int = Field(default=60, alias="OCR_TIMEOUT")
 
     # ---- Hybrid Search & Reranking ---------------------------------------
     hybrid_search_enabled: bool = Field(default=True, alias="HYBRID_SEARCH_ENABLED")
