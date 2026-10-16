@@ -203,8 +203,8 @@ def fetch_documents() -> list[dict]:
 
 
 # --- Navigation Tabs ------------------------------------------------------
-tab_upload, tab_docs, tab_qa, tab_eval = st.tabs(
-    ["Upload & Index", "Indexed Documents", "Ask", "Evaluation"]
+tab_upload, tab_docs, tab_qa, tab_monitoring = st.tabs(
+    ["Upload & Index", "Indexed Documents", "Ask", "System Monitoring"]
 )
 
 
@@ -244,6 +244,7 @@ with tab_upload:
                         files={"file": (file_obj.name, file_obj.getvalue())},
                     )
                     if ok and isinstance(data, dict):
+                        ingest_sum = data.get("ingestion_summary") or {}
                         results.append({
                             "File": file_obj.name,
                             "Status": "✅ Indexed",
@@ -251,12 +252,18 @@ with tab_upload:
                             "Type": data.get("document_type", "digital"),
                             "Pages": data.get("total_pages", 1),
                             "Digital": data.get("pages_digital", 0),
-                            "OCR": data.get("pages_ocr", 0),
+                            "Recovered": data.get("pages_recovered", 0),
+                            "Blank": data.get("pages_blank", 0),
+                            "Attention": len(data.get("pages_requiring_attention", [])),
                             "Chunks": data.get("chunk_count", 0),
+                            "_raw": data,
                         })
                         if data.get("warnings"):
                             for w in data["warnings"]:
                                 st.warning(f"⚠️ {file_obj.name}: {w}")
+                        if data.get("recovery_log"):
+                            for r_msg in data["recovery_log"]:
+                                st.info(f"ℹ️ {file_obj.name}: {r_msg}")
                     else:
                         results.append({
                             "File": file_obj.name,
@@ -265,15 +272,33 @@ with tab_upload:
                             "Type": "-",
                             "Pages": 0,
                             "Digital": 0,
-                            "OCR": 0,
+                            "Recovered": 0,
+                            "Blank": 0,
+                            "Attention": 0,
                             "Chunks": 0,
+                            "_raw": {},
                         })
 
                 progress_bar.progress((i + 1) / len(uploaded_files))
 
             with status_container:
                 st.success("Indexing complete!")
-                st.dataframe(results, use_container_width=True)
+                
+                # Final Ingestion Summary
+                total_proc = sum(r["Pages"] for r in results)
+                total_rec = sum(r["Recovered"] for r in results)
+                total_att = sum(r["Attention"] for r in results)
+                total_chk = sum(r["Chunks"] for r in results)
+                
+                sc1, sc2, sc3, sc4 = st.columns(4)
+                sc1.metric("Total Pages Processed", total_proc)
+                sc2.metric("Pages Recovered", total_rec)
+                sc3.metric("Pages Requiring Attention", total_att)
+                sc4.metric("Chunks Indexed", total_chk)
+
+                # Clean display table without internal _raw key
+                display_results = [{k: v for k, v in r.items() if not k.startswith("_")} for r in results]
+                st.dataframe(display_results, use_container_width=True)
 
 
 # --- 2. Documents Tab -----------------------------------------------------
@@ -509,9 +534,9 @@ with tab_qa:
                 st.error(err)
 
 
-# --- 4. Evaluation Tab ----------------------------------------------------
-with tab_eval:
-    st.subheader("Evaluation & monitoring")
+# --- 4. Monitoring Tab ----------------------------------------------------
+with tab_monitoring:
+    st.subheader("System Monitoring & Telemetry")
     ok, m, err = api_request("GET", "/metrics", timeout=(5.0, 15.0))
     if ok and isinstance(m, dict):
         summary = m.get("summary", {})
@@ -527,10 +552,5 @@ with tab_eval:
         st.json(m.get("config", {}))
         st.markdown("#### Recent queries")
         st.dataframe(m.get("recent", []), use_container_width=True)
-        st.info(
-            "Ragas scores (Context Recall, Faithfulness, Answer Relevancy) are "
-            "produced by running `python -m app.evaluation.ragas_eval` and are "
-            "saved under data/evaluation/results/."
-        )
     else:
         st.error(f"Could not retrieve metrics: {err}")
