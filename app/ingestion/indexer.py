@@ -156,18 +156,36 @@ def ingest_file(
         }},
     )
 
+    ingestion_summary = {
+        "total_pages_processed": extraction_summary.total_pages,
+        "pages_digital": extraction_summary.pages_digital,
+        "pages_recovered": extraction_summary.pages_recovered,
+        "pages_blank": extraction_summary.pages_blank,
+        "pages_unrecoverable": extraction_summary.pages_unrecoverable,
+        "pages_requiring_attention": len(extraction_summary.pages_requiring_attention),
+        "attention_pages": extraction_summary.pages_requiring_attention,
+        "chunks_indexed": len(records),
+    }
+
     return {
         "document_id": document_id,
         "document_name": document_name,
         "chunk_count": len(records),
+        "vectors_inserted": len(records),
         "status": "indexed",
         "upload_time": upload_time,
         "embedding_tokens": total_tokens,
         "total_pages": extraction_summary.total_pages,
         "pages_digital": extraction_summary.pages_digital,
+        "pages_recovered": extraction_summary.pages_recovered,
+        "pages_blank": extraction_summary.pages_blank,
+        "pages_unrecoverable": extraction_summary.pages_unrecoverable,
+        "pages_requiring_attention": extraction_summary.pages_requiring_attention,
         "pages_ocr": extraction_summary.pages_ocr_vision + extraction_summary.pages_ocr_local,
         "document_type": extraction_summary.document_type,
         "warnings": extraction_summary.warnings,
+        "recovery_log": extraction_summary.recovery_log,
+        "ingestion_summary": ingestion_summary,
         "min_tokens": min_tokens,
         "max_tokens": max_tokens,
         "avg_tokens": avg_tokens,
