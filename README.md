@@ -5,7 +5,7 @@
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.33%2B-FF4B4B.svg?logo=streamlit&logoColor=white)](https://streamlit.io/)
 [![Qdrant](https://img.shields.io/badge/Qdrant-Vector%20DB-DC2626.svg?logo=qdrant&logoColor=white)](https://qdrant.tech/)
 [![NVIDIA NIM](https://img.shields.io/badge/NVIDIA%20NIM-Vision%20%26%20Embeddings-76B900.svg?logo=nvidia&logoColor=white)](https://build.nvidia.com/)
-[![Pytest](https://img.shields.io/badge/Pytest-50%20Passed-brightgreen.svg?logo=pytest&logoColor=white)](https://docs.pytest.org/)
+[![Pytest](https://img.shields.io/badge/Pytest-108%20Passed-brightgreen.svg?logo=pytest&logoColor=white)](https://docs.pytest.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg?logo=docker&logoColor=white)](https://www.docker.com/)
 
 A production-grade, domain-configurable **Retrieval-Augmented Generation (RAG)** assistant designed for high-fidelity document question answering. The system ingests **digital PDFs, scanned documents, embedded infographics/tables, standalone images (`.png`, `.jpg`), Word documents, and Markdown**, constructs section-aware vector embeddings, and delivers strictly **grounded, page-cited responses** with real-time observability and context-sufficiency safeguards.
@@ -18,7 +18,7 @@ General-purpose Large Language Models (LLMs) hallucinate or produce generic answ
 
 **Domain-Specific RAG Assistant** bridges this gap through a high-precision context engineering pipeline:
 
-- **Multi-Modal Document Ingestion**: Ingests pure digital text, scanned image pages, and mixed pages containing embedded tables/charts using PyMuPDF and **NVIDIA NIM Vision OCR** (`meta/llama-3.2-11b-vision-instruct`), with an on-device **RapidOCR fallback**.
+- **Multi-Modal Ingestion & AI Vision Recovery**: Ingests pure digital text, scanned image pages, and mixed pages containing embedded tables/charts using PyMuPDF and **NVIDIA NIM Vision** (`meta/llama-3.2-11b-vision-instruct`), with contrast/sharpness preprocessing retries, blank page discrimination, and an on-device **RapidOCR fallback**.
 - **Section-Aware Chunking**: Preserves heading hierarchies (`section_id`, `section_heading`, `section_chunk_index`) and propagates section boundaries across multi-page document spans.
 - **Deterministic Vector Indexing**: Computes 2,048-dimensional dense embeddings via **NVIDIA Nemotron-3-Embed-1B** and indexes them into **Qdrant** with deterministic UUID5 point IDs.
 - **Heading-Aware Section Retrieval**: When users query section titles (e.g., *"SECTION C — 20 Ways to Make Money Using AI"*), the system identifies the section intent, scrolls all contiguous section chunks across page ranges, and bypasses artificial top-$k$ cutoffs.
@@ -105,10 +105,16 @@ flowchart TD
 1. **Document Upload**: Multi-file ingestion via FastAPI `POST /upload` or the Streamlit web interface.
 2. **Validation**: Safe filename normalization (preventing path traversal) and file size validation (default $25\text{ MB}$).
 3. **Digital Extraction**: PyMuPDF extracts text layout blocks and structured table blocks (`page.find_tables()`).
-4. **Hybrid OCR for Scanned Pages & Embedded Images**: 
-   - Detects embedded images covering $\ge 10\%$ of page area.
-   - Dispatches images to **NVIDIA NIM Vision** (`meta/llama-3.2-11b-vision-instruct`) with a Markdown table transcription prompt.
-   - Falls back to local **RapidOCR (ONNX)** when offline or vision credentials are unavailable.
+4. **AI-Powered Document Extraction & Scanned Page Recovery**: 
+   - Detects extraction failures (pages with empty, unusually short, or unreadable text).
+   - Distinguishes genuinely blank pages (no digital text, no embedded images, no non-white vector drawings, uniform pixel variance) without false-alarm OCR errors.
+   - For scanned, image-based, or degraded pages, renders high-DPI page images ($200\text{–}300\text{ DPI}$).
+   - Dispatches images to **NVIDIA NIM Vision** (`meta/llama-3.2-11b-vision-instruct`) with a structural Markdown transcription prompt.
+   - If initial vision extraction fails, applies contrast ($1.6\times$) and sharpness ($1.4\times$) preprocessing and retries with a secondary recovery prompt.
+   - Falls back gracefully to local **RapidOCR (ONNX)** when offline or vision credentials are unavailable.
+   - Preserves headings, paragraphs, bullet points, numbered lists, tables, and page metadata across page continuations.
+   - Handles unrecoverable pages gracefully without terminating ingestion of the remaining document.
+   - Produces structured ingestion summaries and recovery logs (`pages_recovered`, `pages_blank`, `pages_unrecoverable`, `pages_requiring_attention`).
 5. **Text Cleaning**: Normalizes Unicode punctuation (em-dashes `\u2014`, en-dashes `\u2013`, minus signs), repairs hyphenated line wraps, removes isolated page numbers, and joins multi-line section titles split across line breaks.
 6. **Section-Aware Chunking**: Token-bounded chunking (configurable 500–800 tokens, 50–100 token overlap) that assigns `section_id`, `section_heading`, `subsection_heading`, and `section_chunk_index` metadata to every chunk, propagating section boundaries across multi-page document spans.
 7. **Embedding Generation**: Batch embedding generation with dimension validation ($2,048$ dimensions).
@@ -127,9 +133,11 @@ flowchart TD
 | Feature | Description | Status | Source File |
 |---|---|---|---|
 | **Digital PDF Ingestion** | Page-by-page digital text & table layout extraction | ✅ Verified | [`app/ingestion/loader.py`](app/ingestion/loader.py) |
+| **AI Document Extraction & Recovery** | Multi-tier vision recovery, contrast/sharpness retry, blank page discrimination | ✅ Verified | [`app/ingestion/loader.py`](app/ingestion/loader.py) |
 | **Embedded Image Table OCR** | Transcribes charts, slides & tables inside PDF pages | ✅ Verified | [`app/ingestion/loader.py`](app/ingestion/loader.py) |
 | **Standalone Image Ingestion** | Direct upload & OCR for `.png`, `.jpg`, `.jpeg`, `.webp` | ✅ Verified | [`app/ingestion/loader.py`](app/ingestion/loader.py) |
 | **Local OCR Fallback** | RapidOCR ONNX fallback when Vision API is offline | ✅ Verified | [`app/ingestion/loader.py`](app/ingestion/loader.py) |
+| **Ingestion Summary & Reporting** | Real-time recovery stats, blank pages, and attention tracking | ✅ Verified | [`app/ingestion/indexer.py`](app/ingestion/indexer.py) |
 | **Section Boundary Tracking** | Propagates headings across multi-page chapters | ✅ Verified | [`app/ingestion/chunker.py`](app/ingestion/chunker.py) |
 | **Heading-Aware Section Retrieval** | Retrieves complete multi-chunk sections in sequence | ✅ Verified | [`app/retrieval/retriever.py`](app/retrieval/retriever.py) |
 | **Exact Keyword Phrase Boosting** | Boosts candidate ranking on exact term matches | ✅ Verified | [`app/retrieval/reranker.py`](app/retrieval/reranker.py) |
@@ -238,16 +246,21 @@ Domain-Specific-RAG-Application/
 ├── prompts/                        # Versioned prompt templates
 │   ├── answer_prompt.txt           # RAG context framing template
 │   └── rag_system_prompt.txt       # Strict grounding and citation system instructions
-├── tests/                          # Automated test suite (43 tests in tests/)
+├── tests/                          # Automated test suite (108 tests in tests/)
+│   ├── test_extraction_recovery.py # AI vision recovery, preprocessing retry, and blank detection (9)
 │   ├── test_comprehensive_rag.py   # Multi-modal PDF ingestion, OCR, and RAG tests (13)
 │   ├── test_section_retrieval.py   # Heading detection, section bounds, and chunk expansion (6)
+│   ├── test_section13_pdf_and_gen* # Complex multi-chunk definitions and multi-page tables (12)
+│   ├── test_rag_stages_and_scen*   # 4 decoupled pipeline stages and scenario regressions (14)
+│   ├── test_pdf_to_markdown_pipe*  # End-to-end PDF-to-Markdown conversion & validation (10)
 │   ├── test_image_extraction.py    # Direct image OCR and table validation tests (3)
-│   ├── test_api.py                 # FastAPI endpoints, metrics, and health tests (5)
+│   ├── test_api.py                 # FastAPI endpoints, metrics, and health tests (8)
+│   ├── test_e2e_integration.py     # Live end-to-end API upload and query flows (4)
+│   ├── test_frontend_helpers.py    # Streamlit helper resilience and gateway handling (13)
 │   ├── test_nvidia_embeddings.py   # Embedding validation, dimension, and redaction (7)
 │   ├── test_rag.py                 # Prompt templates, grounded answering, and citations (3)
 │   ├── test_retrieval.py           # Deduplication, thresholding, and formatting (3)
 │   └── test_ingestion.py           # Text cleaning, whitespace, and pagination tests (3)
-├── test_modal_llm.py               # Modal serverless LLM and pipeline tests (7)
 ├── .env.example                    # Template for environment variables
 ├── docker-compose.yml              # Multi-container orchestration (Qdrant + App + UI)
 ├── Dockerfile                      # Application container definition
@@ -335,11 +348,13 @@ MIN_SIMILARITY=0.10
 SUFFICIENCY_THRESHOLD=0.15
 MAX_CONTEXT_CHARS=16000
 
-# ---- Ingestion & OCR ----
-OCR_ENGINE=auto
-OCR_DEFAULT_DPI=150
-OCR_HIGH_DPI=250
+# ---- Ingestion & AI Vision Recovery ----
+OCR_ENGINE=auto                # auto | vision | local | none
+OCR_DEFAULT_DPI=200
+OCR_HIGH_DPI=300
 OCR_TRIGGER_CHAR_THRESHOLD=40
+OCR_MAX_RETRIES=2
+OCR_TIMEOUT=60
 
 # ---- File Uploads ----
 MAX_UPLOAD_MB=25
@@ -387,7 +402,33 @@ docker compose up --build
 - Frontend: `http://localhost:8501`
 - Qdrant: `http://localhost:6333/dashboard`
 
+#### Option D: Deploying on Render (Production Cloud Deployment)
+
+Deploy as two distinct, resilient Web Services using the included `render.yaml` Blueprint or manual setup:
+
+**1. Backend Web Service (`domain-rag-backend`)**:
+- **Environment**: Docker
+- **Dockerfile Path**: `Dockerfile`
+- **Start Command**: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+- **Health Check Path**: `/health` (or `/_stcore/health`)
+- **Key Environment Variables**:
+  - `NVIDIA_API_KEY`: `<your-nvidia-api-key>`
+  - `DOMAIN_NAME`: `Company Policy Assistant`
+  - `MAX_UPLOAD_MB`: `200`
+  - `LLM_TIMEOUT`: `120`
+  - `LLM_MAX_TOKENS`: `2500`
+  - `LLM_TEMPERATURE`: `0.2`
+
+**2. Frontend Web Service (`domain-rag-frontend`)**:
+- **Environment**: Docker
+- **Dockerfile Path**: `Dockerfile.frontend`
+- **Start Command**: `streamlit run frontend/app.py --server.address 0.0.0.0 --server.port $PORT`
+- **Health Check Path**: `/_stcore/health`
+- **Key Environment Variables**:
+  - `API_URL`: `https://<your-backend-name>.onrender.com` (pointing to the backend service URL)
+
 ---
+
 
 ## 9. Usage Guide
 
@@ -491,25 +532,30 @@ You can test these real queries against indexed documents:
 
 ---
 
-## 12. Results and Evaluation — 🚀 RESULT
+## 12. Verification & Results — 🚀 RESULT
 
-Empirical verification executed against the live system and test suite:
+Empirical verification executed against the live system and automated test suite:
 
 ### Quantitative Performance Metrics
 
 | Metric | Measured Value | Verification Source |
 |---|---|---|
-| **Test Suite Pass Rate** | **100% (50 / 50 passed)** | `uv run pytest` (30.26s runtime) |
+| **Test Suite Pass Rate** | **100% (108 / 108 passed)** | `uv run pytest` |
+| **Extraction & Recovery Suite** | **9 / 9 passed** | [`tests/test_extraction_recovery.py`](tests/test_extraction_recovery.py) |
 | **Comprehensive RAG Suite** | **13 / 13 passed** | [`tests/test_comprehensive_rag.py`](tests/test_comprehensive_rag.py) |
 | **Section Retrieval Suite** | **6 / 6 passed** | [`tests/test_section_retrieval.py`](tests/test_section_retrieval.py) |
+| **Section 13 PDF & Generation Suite**| **12 / 12 passed** | [`tests/test_section13_pdf_and_generation.py`](tests/test_section13_pdf_and_generation.py) |
+| **RAG Stages & Scenarios Suite** | **14 / 14 passed** | [`tests/test_rag_stages_and_scenarios.py`](tests/test_rag_stages_and_scenarios.py) |
+| **PDF to Markdown Pipeline Suite**| **10 / 10 passed** | [`tests/test_pdf_to_markdown_pipeline.py`](tests/test_pdf_to_markdown_pipeline.py) |
 | **Image Extraction Suite** | **3 / 3 passed** | [`tests/test_image_extraction.py`](tests/test_image_extraction.py) |
+| **Frontend Helpers Suite** | **13 / 13 passed** | [`tests/test_frontend_helpers.py`](tests/test_frontend_helpers.py) |
+| **API & Health Suite** | **8 / 8 passed** | [`tests/test_api.py`](tests/test_api.py) |
+| **E2E Integration Suite** | **4 / 4 passed** | [`tests/test_e2e_integration.py`](tests/test_e2e_integration.py) |
 | **NVIDIA Embeddings Suite** | **7 / 7 passed** | [`tests/test_nvidia_embeddings.py`](tests/test_nvidia_embeddings.py) |
-| **Modal LLM Endpoint Suite** | **7 / 7 passed** | [`test_modal_llm.py`](test_modal_llm.py) |
-| **API & Metrics Suite** | **5 / 5 passed** | [`tests/test_api.py`](tests/test_api.py) |
-| **Core RAG & Ingestion Suite** | **9 / 9 passed** | [`tests/test_rag.py`](tests/test_rag.py), `test_ingestion.py`, `test_retrieval.py` |
+| **Core RAG, Ingestion & Retrieval**| **9 / 9 passed** | [`tests/test_rag.py`](tests/test_rag.py), `test_ingestion.py`, `test_retrieval.py` |
 | **Page 24 Extraction Fidelity** | **172 chars → 2,282 chars** | Embedded table OCR extraction |
 | **Page 26 Extraction Fidelity** | **63 chars → 2,558 chars** | Embedded selling platforms OCR |
-| **Section C Retrieval Completeness** | **20 / 20 methods (100%)** | Live Query 2 (Pages 17–23) |
+| **Section C Retrieval Completeness** | **20 / 20 methods (100%)** | Live Query (Pages 17–23) |
 | **Citation Precision** | **100% valid page citations** | Page 11, Page 24, Pages 17–23 |
 | **Image Query Similarity** | **0.7212 cosine similarity** | Standalone PNG upload query |
 | **Short Query Latency** | **2.63 seconds** | 100-token generation benchmark |
@@ -536,7 +582,7 @@ Empirical verification executed against the live system and test suite:
 
 ## 15. Testing
 
-The repository contains 50 automated unit and integration tests across 9 test modules:
+The repository contains 108 automated unit and integration tests across 14 test modules:
 
 ```powershell
 # Run the complete test suite across the workspace
@@ -545,21 +591,29 @@ uv run pytest
 # Run with concise summary
 uv run pytest -q
 
-# Run specific test modules
+# Run document extraction and recovery tests
+uv run pytest tests/test_extraction_recovery.py -q
+
+# Run specific functional suites
 uv run pytest tests/test_comprehensive_rag.py -q
 uv run pytest tests/test_section_retrieval.py -q
 uv run pytest tests/test_image_extraction.py -q
-uv run pytest test_modal_llm.py -q
 ```
 
 ### Test Coverage Highlights
 
+- `test_digitally_selectable_pdf`: Verifies pure digital text extraction with zero false recovery flags.
+- `test_scanned_pdf_ai_vision_recovery`: Verifies AI vision text extraction (`meta/llama-3.2-11b-vision-instruct`) for scanned document pages.
+- `test_mixed_digital_and_scanned_pages`: Verifies per-page classification and multi-modal handling.
+- `test_tables_headings_bullet_points_structure`: Verifies markdown tables, headers, and bullet lists preservation.
+- `test_genuinely_blank_page_detection`: Verifies blank page identification without raising false OCR warnings.
+- `test_document_exceeding_100_pages`: Verifies memory-efficient streaming for large documents (100+ pages).
+- `test_document_with_unrecoverable_page_does_not_abort`: Verifies graceful page failure without aborting ingestion.
+- `test_recovered_content_indexed_and_retrievable`: Verifies recovered text is indexed into vector DB and retrievable via Ask interface.
+- `test_vision_retry_with_preprocessing`: Verifies contrast and sharpness enhancement retry on vision failure.
 - `test_cleaner_normalizes_unicode_dashes`: Verifies em-dash, en-dash, and minus-sign repair.
-- `test_extract_section_header_exact_and_fuzzy`: Verifies heading detection across case and punctuation variations.
 - `test_chunk_preserves_section_metadata`: Verifies that chunks retain section IDs, headings, and indexes.
 - `test_section_expansion_retrieves_all_consecutive_chunks`: Verifies sequential multi-chunk retrieval without cutoff.
-- `test_direct_image_extraction_local`: Verifies standalone PNG extraction via local OCR.
-- `test_fully_scanned_pdf`: Verifies synthetic scanned PDF processing without digital page misclassification.
 - `test_query_sufficiency_threshold`: Verifies that low-scoring candidates trigger an honest insufficient context response.
 
 ---
@@ -584,7 +638,7 @@ Contributions are welcome! Please follow these steps:
    git checkout -b feature/your-feature-name
    ```
 3. **Commit Changes**: Write clear, descriptive commit messages adhering to conventional commits.
-4. **Run Tests**: Verify that all 50 tests pass before opening a PR:
+4. **Run Tests**: Verify that all 108 tests pass before opening a PR:
    ```bash
    uv run pytest -q
    ```
