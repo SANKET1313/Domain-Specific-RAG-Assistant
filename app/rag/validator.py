@@ -133,15 +133,92 @@ def validate_answer_evidence(
     unsupported_numbers = [n for n in answer_numbers if n not in ctx.text and n not in {"1", "2", "3", "4", "5", "10"}]
 
     all_hallucinations = [str(s) for s in hallucinated_sources] + hallucinated_in_text
-    is_supported = (grounding_score >= 0.40 or len(answer_tokens) <= 5) and (len(hallucinated_in_text) == 0)
+    is_supported = (grounding_score >= 0.35 or len(answer_tokens) <= 5) and (len(hallucinated_in_text) == 0)
+
+    # 5. Extract verbatim supporting evidence passage from context
+    supporting_evidence: str | None = None
+    primary_doc_id: str | None = None
+    primary_doc_name: str | None = None
+    source_pages: list[Any] = []
+
+    # Check for insufficient context indicators in answer
+    is_insufficient_text = any(
+        phrase in answer.lower()
+        for phrase in (
+            "could not find sufficient",
+            "could not be established",
+            "does not contain sufficient",
+            "insufficient information",
+            "no evidence found",
+            "not found in the indexed documents",
+        )
+    )
+
+    if not is_supported or is_insufficient_text or not validated_sources:
+        insufficient_evidence = True
+        supporting_evidence = None
+        if not is_supported and len(answer_tokens) > 5:
+            answer = (
+                "The retrieved passages do not contain sufficient evidence to answer "
+                "this question reliably."
+            )
+            validated_sources = []
+    else:
+        insufficient_evidence = False
+        # Find best supporting sentence / snippet across retrieved chunks
+        best_sentence = ""
+        best_overlap = -1
+        target_tokens = set(answer_tokens)
+
+        for c in ctx.used:
+            doc_id = c.metadata.get("document_id")
+            doc_name = c.document_name
+            # Split into sentence candidates
+            sentences = re.split(r"(?<=[.!?])\s+|\n+", c.text.strip())
+            for s in sentences:
+                s_clean = s.strip()
+                if len(s_clean) < 15:
+                    continue
+                s_tokens = set(re.findall(r"\b[a-zA-Z0-9]{4,}\b", s_clean.lower()))
+                overlap = len(target_tokens & s_tokens)
+                if overlap > best_overlap:
+                    best_overlap = overlap
+                    best_sentence = s_clean
+                    primary_doc_id = doc_id
+                    primary_doc_name = doc_name
+
+        if best_sentence:
+            supporting_evidence = best_sentence
+        elif ctx.used:
+            # Fallback to the first chunk's leading text
+            first_chunk = ctx.used[0]
+            supporting_evidence = first_chunk.text.strip().split("\n")[0][:250]
+            primary_doc_id = first_chunk.metadata.get("document_id")
+            primary_doc_name = first_chunk.document_name
+
+        # Extract unique sorted source pages
+        for s in validated_sources:
+            p_val = s.get("page") or s.get("page_start")
+            if p_val is not None and p_val not in source_pages:
+                source_pages.append(p_val)
+
+        if not primary_doc_id and ctx.used:
+            primary_doc_id = ctx.used[0].metadata.get("document_id")
+        if not primary_doc_name and ctx.used:
+            primary_doc_name = ctx.used[0].document_name
 
     validation_report = {
-        "is_supported": is_supported,
+        "is_supported": is_supported and not insufficient_evidence,
         "grounding_score": grounding_score,
         "citations_valid": len(all_hallucinations) == 0,
         "hallucinated_citations": all_hallucinations,
         "unsupported_numbers": unsupported_numbers,
         "valid_sources_count": len(validated_sources),
+        "supporting_evidence": supporting_evidence,
+        "source_document_id": primary_doc_id,
+        "source_document_name": primary_doc_name,
+        "source_pages": source_pages,
+        "insufficient_evidence": insufficient_evidence,
     }
 
     return answer, validated_sources, validation_report
