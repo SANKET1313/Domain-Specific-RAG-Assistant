@@ -16,7 +16,6 @@ myvenv/
 # Data / artifacts
 data/documents/*
 !data/documents/.gitkeep
-data/evaluation/results/
 qdrant_storage/
 
 # OS / IDE
