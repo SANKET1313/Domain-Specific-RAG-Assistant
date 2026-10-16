@@ -19,7 +19,7 @@ COPY prompts ./prompts
 COPY frontend ./frontend
 COPY .streamlit ./.streamlit
 COPY run.py .
-RUN mkdir -p data/documents data/sample_documents data/evaluation qdrant_storage
+RUN mkdir -p data/documents data/sample_documents qdrant_storage
 
 EXPOSE 8501 8000
 CMD ["python", "run.py"]
