@@ -41,6 +41,84 @@ from app.retrieval.retriever import retrieve
 logger = get_logger("rag")
 
 
+def _build_diagnostic_report(
+    query: str,
+    analysis: Any,
+    candidates: list,
+    selected: list,
+    flt: Optional[dict[str, Any]],
+    settings: Any,
+    secondary_attempted: bool = False,
+    secondary_query: Optional[str] = None,
+    sufficient: bool = True,
+    rejection_reason: Optional[str] = None,
+) -> dict[str, Any]:
+    """Expose pre-generation diagnostic telemetry capturing full retrieval state."""
+    selected_doc_ids = sorted(
+        list({c.metadata.get("document_id") for c in selected if c.metadata.get("document_id")})
+    )
+    if not selected_doc_ids and flt and flt.get("document_id"):
+        selected_doc_ids = [flt["document_id"]]
+
+    retrieved_chunks = [
+        {
+            "rank": idx,
+            "chunk_id": c.chunk_id,
+            "document_id": c.metadata.get("document_id"),
+            "document_name": c.document_name,
+            "page_number": c.page_number,
+            "page_start": getattr(c, "page_start", c.page_number),
+            "page_end": getattr(c, "page_end", c.page_number),
+            "section_heading": c.metadata.get("section_heading"),
+            "score": round(c.score, 4),
+            "text": c.text,
+        }
+        for idx, c in enumerate(candidates, start=1)
+    ]
+
+    final_ordered_passages = [
+        {
+            "order": idx,
+            "chunk_id": c.chunk_id,
+            "document_id": c.metadata.get("document_id"),
+            "document_name": c.document_name,
+            "page_range": f"{getattr(c, 'page_start', c.page_number)}–{getattr(c, 'page_end', c.page_number)}",
+            "section_heading": c.metadata.get("section_heading"),
+            "score": round(c.score, 4),
+            "text": c.text,
+        }
+        for idx, c in enumerate(selected, start=1)
+    ]
+
+    return {
+        "original_user_question": query,
+        "normalized_search_query": analysis.cleaned_query,
+        "query_keywords": analysis.keywords,
+        "query_phrases": analysis.phrases,
+        "selected_document_ids": selected_doc_ids,
+        "metadata_filters_applied": flt or {},
+        "retrieval_parameters": {
+            "top_k": settings.top_k,
+            "retrieval_candidates": settings.retrieval_candidates,
+            "hybrid_search_enabled": settings.hybrid_search_enabled,
+            "rrf_k": settings.rrf_k,
+            "dense_weight": settings.dense_weight,
+            "sparse_weight": settings.sparse_weight,
+            "sufficiency_threshold": settings.sufficiency_threshold,
+        },
+        "retrieved_chunks": retrieved_chunks,
+        "reranking_results": {
+            "candidates_count": len(candidates),
+            "selected_count": len(selected),
+            "secondary_retrieval_attempted": secondary_attempted,
+            "secondary_query": secondary_query,
+        },
+        "final_ordered_passages": final_ordered_passages,
+        "is_sufficient": sufficient,
+        "rejection_reason": rejection_reason,
+    }
+
+
 def answer_query(
     query: str,
     flt: Optional[dict[str, Any]] = None,
@@ -92,6 +170,21 @@ def answer_query(
                 top_score = selected[0].score if selected else 0.0
                 sufficient = is_sufficient(selected, query=query)
 
+    # Build diagnostic report before LLM call
+    diag_report = _build_diagnostic_report(
+        query=query,
+        analysis=analysis,
+        candidates=candidates,
+        selected=selected,
+        flt=flt,
+        settings=settings,
+        secondary_attempted=secondary_attempted,
+        secondary_query=secondary_query,
+        sufficient=sufficient,
+        rejection_reason=None if sufficient else "Insufficient similarity or keyword evidence found in context.",
+    )
+    logger.info("retrieval_diagnostic_report", extra={"extra": diag_report})
+
     if not sufficient:
         total_ms = (time.perf_counter() - t0) * 1000
         _record(
@@ -114,8 +207,14 @@ def answer_query(
         resp: dict[str, Any] = {
             "answer": insufficient_context_message(),
             "sources": [],
+            "supporting_evidence": None,
+            "source_document_id": flt.get("document_id") if flt else None,
+            "source_document_name": None,
+            "source_pages": [],
+            "insufficient_evidence": True,
             "sufficient_context": False,
             "contexts": [c.text for c in selected],
+            "diagnostic_report": diag_report,
             "metrics": {
                 "retrieval_latency_ms": round(retrieval_ms, 2),
                 "llm_latency_ms": 0.0,
@@ -157,6 +256,7 @@ def answer_query(
                 ],
                 "sufficiency": False,
                 "reason": "Insufficient similarity or keyword evidence found in context.",
+                "diagnostic_report": diag_report,
             }
 
         return resp
@@ -190,7 +290,7 @@ def answer_query(
         output_tokens=result.llm.output_tokens,
         embedding_tokens=emb_tokens,
         model=result.llm.model,
-        sufficient=True,
+        sufficient=not val_report.get("insufficient_evidence", False),
         cost=cost,
         is_truncated=ctx.is_truncated,
         context_tokens=ctx.token_count,
@@ -199,9 +299,15 @@ def answer_query(
     resp = {
         "answer": validated_answer,
         "sources": validated_sources,
-        "sufficient_context": True,
+        "supporting_evidence": val_report.get("supporting_evidence"),
+        "source_document_id": val_report.get("source_document_id"),
+        "source_document_name": val_report.get("source_document_name"),
+        "source_pages": val_report.get("source_pages", []),
+        "insufficient_evidence": val_report.get("insufficient_evidence", False),
+        "sufficient_context": not val_report.get("insufficient_evidence", False),
         "contexts": [c.text for c in selected],
         "validation": val_report,
+        "diagnostic_report": diag_report,
         "metrics": {
             "retrieval_latency_ms": round(retrieval_ms, 2),
             "llm_latency_ms": round(llm_ms, 2),
@@ -253,6 +359,7 @@ def answer_query(
             "model": result.llm.model,
             "grounded": val_report.get("is_supported", True),
             "validation": val_report,
+            "diagnostic_report": diag_report,
         }
 
     return resp
