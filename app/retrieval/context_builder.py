@@ -48,6 +48,7 @@ def build_context(selected: list[Candidate]) -> BuiltContext:
 
         block = (
             f"SOURCE {i}\n"
+            f"[Document: {c.document_name} | Page: {page_str}{f' | Section: {sec_h}' if sec_h else ''}]\n"
             f"Document: {c.document_name}\n"
             f"Page: {page_str}\n"
             f"{sec_line}"
@@ -69,6 +70,7 @@ def build_context(selected: list[Candidate]) -> BuiltContext:
                 trimmed_text = c.text.strip()[:allowed] + " ... [truncated]"
                 block = (
                     f"SOURCE {i}\n"
+                    f"[Document: {c.document_name} | Page: {page_str}{f' | Section: {sec_h}' if sec_h else ''}]\n"
                     f"Document: {c.document_name}\n"
                     f"Page: {page_str}\n"
                     f"{sec_line}"
