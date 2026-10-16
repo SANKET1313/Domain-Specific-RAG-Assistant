@@ -5,7 +5,7 @@
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.33%2B-FF4B4B.svg?logo=streamlit&logoColor=white)](https://streamlit.io/)
 [![Qdrant](https://img.shields.io/badge/Qdrant-Vector%20DB-DC2626.svg?logo=qdrant&logoColor=white)](https://qdrant.tech/)
 [![NVIDIA NIM](https://img.shields.io/badge/NVIDIA%20NIM-Vision%20%26%20Embeddings-76B900.svg?logo=nvidia&logoColor=white)](https://build.nvidia.com/)
-[![Pytest](https://img.shields.io/badge/Pytest-108%20Passed-brightgreen.svg?logo=pytest&logoColor=white)](https://docs.pytest.org/)
+[![Pytest](https://img.shields.io/badge/Pytest-117%20Passed-brightgreen.svg?logo=pytest&logoColor=white)](https://docs.pytest.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg?logo=docker&logoColor=white)](https://www.docker.com/)
 
 A production-grade, domain-configurable **Retrieval-Augmented Generation (RAG)** assistant designed for high-fidelity document question answering. The system ingests **digital PDFs, scanned documents, embedded infographics/tables, standalone images (`.png`, `.jpg`), Word documents, and Markdown**, constructs section-aware vector embeddings, and delivers strictly **grounded, page-cited responses** with real-time observability and context-sufficiency safeguards.
