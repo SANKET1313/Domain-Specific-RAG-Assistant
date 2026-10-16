@@ -245,6 +245,8 @@ with tab_upload:
                     )
                     if ok and isinstance(data, dict):
                         ingest_sum = data.get("ingestion_summary") or {}
+                        st.session_state["active_doc_id"] = data.get("document_id")
+                        st.session_state["active_doc_name"] = file_obj.name
                         results.append({
                             "File": file_obj.name,
                             "Status": "✅ Indexed",
@@ -499,15 +501,31 @@ with tab_qa:
     filter_doc_id = None
     if docs:
         filter_options = {"All Documents (Global Search)": None}
-        for d in docs:
-            filter_options[f"📄 {d.get('document_name')} ({d.get('document_id')})"] = d.get("document_id")
+        default_idx = 0
+        active_id = st.session_state.get("active_doc_id")
+
+        for idx, d in enumerate(docs, start=1):
+            label = f"📄 {d.get('document_name')} ({d.get('document_id')})"
+            filter_options[label] = d.get("document_id")
+            if active_id and d.get("document_id") == active_id:
+                default_idx = idx
+
+        # If only one document is indexed, default to it
+        if len(docs) == 1 and default_idx == 0:
+            default_idx = 1
 
         selected_filter = st.selectbox(
-            "Filter Context by Document (Optional):",
+            "Filter Context by Document (Recommended for uploaded PDFs):",
             options=list(filter_options.keys()),
+            index=default_idx,
             key="select_filter_doc_qa",
+            help="Restricts retrieval to the selected document to guarantee grounded answers and eliminate cross-document confusion.",
         )
         filter_doc_id = filter_options[selected_filter]
+        if filter_doc_id:
+            st.caption(f"🔒 **Document Scoped**: Searching solely inside `{filter_doc_id}`.")
+        else:
+            st.caption("🌐 **Global Search**: Searching across all indexed documents.")
 
     question = st.text_input("Your question", key="input_qa_question")
     if question and st.button("Get answer", type="primary", key="btn_get_answer"):
@@ -520,16 +538,50 @@ with tab_qa:
             if ok and isinstance(data, dict):
                 st.markdown("### Answer")
                 st.write(data.get("answer", ""))
-                if not data.get("sufficient_context", True):
-                    st.warning("Insufficient context — answer not grounded in documents.")
+                if not data.get("sufficient_context", True) or data.get("insufficient_evidence", False):
+                    st.warning("⚠️ Insufficient context — answer could not be fully grounded in document evidence.")
+
+                # Supporting evidence contract
+                evidence = data.get("supporting_evidence")
+                if evidence:
+                    st.markdown("### 🔍 Supporting Evidence")
+                    st.info(f"\"{evidence}\"")
+
                 st.markdown("### Sources")
                 if data.get("sources"):
                     for s in data["sources"]:
+                        sc_str = f" (Score: {s.get('score', 0):.2f})" if s.get("score") is not None else ""
                         st.markdown(
-                            f"- 📄 **{s.get('document', 'Document')}** — Page {s.get('page', 'n/a')}"
+                            f"- 📄 **{s.get('document', 'Document')}** — Page {s.get('page', 'n/a')}{sc_str}"
                         )
                 else:
                     st.caption("No sources cited.")
+
+                # Diagnostics Expander
+                diag = data.get("diagnostic_report")
+                if diag:
+                    with st.expander("🛠️ Retrieval Diagnostics (Pre-Generation Report)", expanded=False):
+                        st.markdown(f"**Original Query:** `{diag.get('original_user_question')}`")
+                        st.markdown(f"**Normalized Query:** `{diag.get('normalized_search_query')}`")
+                        st.markdown(f"**Selected Document IDs:** `{diag.get('selected_document_ids')}`")
+                        st.markdown(f"**Sufficiency:** `{'✅ Sufficient' if diag.get('is_sufficient') else '❌ Insufficient'}`")
+                        if diag.get("final_ordered_passages"):
+                            st.markdown("#### Final Ordered Passages Selected for LLM")
+                            st.dataframe(
+                                [
+                                    {
+                                        "Order": p.get("order"),
+                                        "Chunk ID": p.get("chunk_id"),
+                                        "Document": p.get("document_name"),
+                                        "Pages": p.get("page_range"),
+                                        "Section": p.get("section_heading") or "-",
+                                        "Score": p.get("score"),
+                                        "Text Snippet": p.get("text", "")[:120] + "...",
+                                    }
+                                    for p in diag.get("final_ordered_passages", [])
+                                ],
+                                use_container_width=True,
+                            )
             else:
                 st.error(err)
 
