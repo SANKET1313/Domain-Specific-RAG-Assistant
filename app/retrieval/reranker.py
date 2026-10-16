@@ -41,10 +41,18 @@ def _compute_lexical_score(analysis: QueryAnalysis, chunk_text: str) -> float:
             score += 0.40
             break
 
-    # 2. Keyword coverage
+    # 2. Consecutive keyword sub-phrase match
+    if len(analysis.keywords) >= 2:
+        for i in range(len(analysis.keywords) - 1):
+            sub_p = f"{analysis.keywords[i]} {analysis.keywords[i+1]}"
+            if sub_p in lower_text:
+                score += 0.25
+                break
+
+    # 3. Keyword coverage
     matched_kw = sum(1 for kw in analysis.keywords if kw in lower_text)
     kw_coverage = matched_kw / len(analysis.keywords)
-    score += 0.50 * kw_coverage
+    score += 0.60 * kw_coverage
 
     return min(1.0, score)
 
@@ -289,8 +297,8 @@ def is_sufficient(selected: list[Candidate], query: Optional[str] = None) -> boo
     if query:
         analysis = analyze_query(query)
         lex_sc = _compute_lexical_score(analysis, selected[0].text)
-        # For short queries or exact phrase matches, lower threshold avoids false rejections
-        if lex_sc >= 0.40 and top_score >= 0.06:
+        # Strong lexical match (keywords and key phrases verbatim in text)
+        if lex_sc >= 0.30:
             return True
         if lex_sc > 0.0 and top_score >= 0.08:
             return True
